@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% block title %}Members — Admin{% endblock %}
+{% block nav %}
+<nav class="admin-nav">
+  <span class="brand">{{ s.printer_name }}</span>
+  <a href="/admin/dashboard">Dashboard</a>
+  <a href="/admin/files">Files</a>
+  <a href="/admin/members" style="color:var(--admin)">Members</a>
+  <a href="/admin/log">Log</a>
+  <a href="/admin/settings">Settings</a>
+  <a href="/admin/logout" class="logout">Logout</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div style="padding:2rem;max-width:900px;margin:0 auto">
+  <h1 style="color:var(--admin);margin-bottom:1.5rem">Certified Members</h1>
+
+  {% if msg %}<div class="ok">{{ msg }}</div><div class="mt1"></div>{% endif %}
+  {% if err %}<div class="err">{{ err }}</div><div class="mt1"></div>{% endif %}
+
+  <div class="settings-section">
+    <h2>Certify a New Member</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="add">
+      <div class="row2">
+        <div><label>First Name</label><input type="text" name="first" required></div>
+        <div><label>Last Name</label><input type="text" name="last" required></div>
+      </div>
+      <div class="mt1"><label>Email</label><input type="email" name="email" required></div>
+      <div class="mt1"><label>Initial Password</label><input type="text" name="password" required
+        placeholder="Give this to the member — they'll be forced to change it on first login"></div>
+      <button class="btn btn-admin mt2" type="submit">Certify Member</button>
+    </form>
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden">
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Certified</th><th></th></tr></thead>
+      <tbody>
+        {% for m in members %}
+        <tr>
+          <td>{{ m.last }}, {{ m.first }}</td>
+          <td style="color:var(--muted)">{{ m.email }}</td>
+          <td>{% if m.active %}<span style="color:var(--ok)">active</span>{% else %}<span style="color:var(--err)">disabled</span>{% endif %}
+            {% if m.must_change_password %}<span style="color:var(--dim);font-size:.7rem"> · pending first login</span>{% endif %}</td>
+          <td style="color:var(--dim);white-space:nowrap">{{ m.created_at }}</td>
+          <td style="white-space:nowrap">
+            <form method="POST" class="print-form" style="display:inline-flex;gap:.4rem;align-items:center">
+              <input type="hidden" name="action" value="reset_password">
+              <input type="hidden" name="member_id" value="{{ m.id }}">
+              <input type="text" name="new_password" placeholder="new password" style="width:120px;padding:.3rem .5rem;font-size:.7rem">
+              <button class="btn btn-ghost" style="padding:.3rem .6rem;font-size:.65rem" type="submit">Reset</button>
+            </form>
+            <form method="POST" style="display:inline" onsubmit="return confirm('{{ 'Disable' if m.active else 'Re-enable' }} {{ m.first }} {{ m.last }}?')">
+              <input type="hidden" name="action" value="toggle_active">
+              <input type="hidden" name="member_id" value="{{ m.id }}">
+              <button class="btn btn-danger" style="padding:.3rem .6rem;font-size:.65rem" type="submit">
+                {{ 'Disable' if m.active else 'Enable' }}
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

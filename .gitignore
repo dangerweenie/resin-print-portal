@@ -1,0 +1,25 @@
+# Runtime data and secrets — these live only on the deployed Pi, never in
+# the repo. If you're testing locally, they'll be generated fresh on first
+# run (see app.py) rather than reused from a shared/committed copy.
+settings.json
+settings.json.bak-*
+uploads.db
+uploads.db.bak-*
+.secret_key
+.api_key
+.initial_admin_password
+files/
+
+# This session's own tooling — not part of the app
+.claude/
+scheduled_tasks.lock
+
+# Python
+__pycache__/
+*.pyc
+
+# Large real member print files used for hands-on testing this session —
+# not sample/fixture data worth committing (large binaries, and some carry
+# real members' names in the filename). Ask in the project docs if you need
+# a small synthetic fixture per format for local testing instead.
+sliced_scenes/

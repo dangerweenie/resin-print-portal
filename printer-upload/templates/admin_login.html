@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block title %}Admin Login{% endblock %}
+{% block content %}
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem">
+<div class="card" style="width:100%;max-width:380px">
+  <div class="tag" style="margin-bottom:.25rem;color:var(--admin)">Admin Access</div>
+  <h1 style="color:var(--admin);margin-bottom:2rem">{{ s.printer_name }}</h1>
+  <form method="POST">
+    <label>Username</label>
+    <input type="text" name="username" autocomplete="off" autofocus>
+    <div class="mt1"><label>Password</label>
+    <input type="password" name="password"></div>
+    {% if err %}<div class="err">{{ err }}</div>{% endif %}
+    <button class="btn btn-admin mt3" type="submit" style="width:100%">Log In</button>
+  </form>
+  <div style="margin-top:1.5rem;text-align:center">
+    <a href="/" style="font-size:.7rem;color:var(--dim)">← Back to Login</a>
+  </div>
+</div>
+</div>
+{% endblock %}

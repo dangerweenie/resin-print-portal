@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+{% block title %}Settings — Admin{% endblock %}
+{% block nav %}
+<nav class="admin-nav">
+  <span class="brand">{{ s.printer_name }}</span>
+  <a href="/admin/dashboard">Dashboard</a>
+  <a href="/admin/files">Files</a>
+  <a href="/admin/members">Members</a>
+  <a href="/admin/log">Log</a>
+  <a href="/admin/settings" style="color:var(--admin)">Settings</a>
+  <a href="/admin/logout" class="logout">Logout</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div style="padding:2rem;max-width:700px;margin:0 auto">
+  <h1 style="color:var(--admin);margin-bottom:2rem">Settings</h1>
+
+  {% if msg %}<div class="ok">{{ msg }}</div><div style="margin-top:1rem"></div>{% endif %}
+
+  <!-- General -->
+  <div class="settings-section">
+    <h2>General</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="general">
+      <label>Printer Name</label>
+      <input type="text" name="printer_name" value="{{ s.printer_name }}">
+      <div class="toggle-row mt2">
+        <input type="checkbox" name="supports_folders" id="supfold"
+               {% if s.supports_folders %}checked{% endif %}
+               style="width:16px;height:16px;accent-color:var(--admin);cursor:pointer">
+        <label for="supfold">Keep native per-member folders on the USB drive</label>
+      </div>
+      <div style="font-size:.7rem;color:var(--dim);margin:.4rem 0 0 2rem;line-height:1.6">
+        Leave unchecked in almost all cases — even printers that technically read into
+        subfolders don't display the folder names on screen, so attribution is only
+        visible when files are flattened with the member's name in the filename.
+        Confirmed: Anycubic M7 Pro / P1 recurse into subfolders (files aren't lost) but
+        never show folder names on screen. Elegoo Saturn 3 is root-only — subfolder
+        files don't appear at all. Saturn 4 is unconfirmed, assumed root-only for now.
+        When unchecked, the USB sync flattens every member's files to the drive root
+        with their name prefixed onto the filename.
+      </div>
+      <button class="btn mt2" type="submit">Save</button>
+    </form>
+  </div>
+
+  <!-- Safety Checklist -->
+  <div class="settings-section">
+    <h2>Pre-Print Safety Checklist</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="safety">
+      <label>One item per line — all must be checked before a member can start a print</label>
+      <textarea name="safety_checklist" rows="6" style="resize:vertical">{{ s.safety_checklist|join('\n') }}</textarea>
+      <button class="btn mt2" type="submit">Save Checklist</button>
+    </form>
+  </div>
+
+  <!-- Consent Text -->
+  <div class="settings-section">
+    <h2>Consent / Rules Text</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="consent">
+      <label>Rules shown to users (plain text, one rule per line)</label>
+      <textarea name="consent_text" rows="10" style="resize:vertical">{{ s.consent_text }}</textarea>
+      <button class="btn mt2" type="submit">Save Consent Text</button>
+    </form>
+  </div>
+
+  <!-- File Type Filter -->
+  <div class="settings-section">
+    <h2>File Type Filter</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="filter">
+      <div class="toggle-row">
+        <input type="checkbox" name="enabled" id="ffilter"
+               {% if s.file_filter_enabled %}checked{% endif %}
+               style="width:16px;height:16px;accent-color:var(--admin);cursor:pointer">
+        <label for="ffilter">Enable file type restriction</label>
+      </div>
+      <div class="mt1">
+        <label>Allowed extensions (comma-separated) — set to this printer's actual supported formats</label>
+        <input type="text" name="allowed_extensions" value="{{ s.allowed_extensions }}"
+               placeholder=".pwsz,.pm7,.pm7m">
+      </div>
+      <button class="btn mt2" type="submit">Save Filter Settings</button>
+    </form>
+  </div>
+
+  <!-- Slack -->
+  <div class="settings-section">
+    <h2>Slack (optional)</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="slack">
+      <label>Incoming Webhook URL — leave blank to disable. Posts a message whenever a member starts a print.</label>
+      <input type="text" name="slack_webhook_url" value="{{ s.slack_webhook_url }}"
+             placeholder="https://hooks.slack.com/services/...">
+      <button class="btn mt2" type="submit">Save Slack Settings</button>
+    </form>
+    <div class="mt2" style="font-size:.75rem;color:var(--muted);line-height:1.7">
+      For a bot to query current/past print jobs (e.g. a Slack slash command), have it call:<br>
+      <code style="color:var(--accent)">GET /api/status</code> with header <code style="color:var(--accent)">X-Api-Key: {{ api_key }}</code>
+    </div>
+  </div>
+
+  <!-- USB -->
+  <div class="settings-section">
+    <h2>USB Drive</h2>
+    <p style="font-size:.8rem;color:var(--muted);margin-bottom:1rem">Manually sync files to the printer USB drive.</p>
+    <form method="POST">
+      <input type="hidden" name="action" value="usb">
+      <button class="btn btn-admin" type="submit">Refresh USB Drive</button>
+    </form>
+  </div>
+
+  <!-- Change Password -->
+  <div class="settings-section">
+    <h2>Change Admin Password</h2>
+    <form method="POST">
+      <input type="hidden" name="action" value="password">
+      <label>New Password</label>
+      <input type="password" name="new_password">
+      <div class="mt1"><label>Confirm Password</label>
+      <input type="password" name="confirm_password"></div>
+      <button class="btn mt2" type="submit">Update Password</button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}
