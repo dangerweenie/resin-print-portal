@@ -65,14 +65,22 @@ scp -r printer-upload captain@<hostname>.lan:/tmp/deploy
 scp usb-refresh.sh captain@<hostname>.lan:/tmp/deploy/
 
 # On the Pi:
-sudo mkdir -p /opt/printer-upload/{templates,files}
-sudo cp /tmp/deploy/app.py /tmp/deploy/sliced_file_info.py /tmp/deploy/pure_aes.py /opt/printer-upload/
+sudo mkdir -p /opt/printer-upload/{templates,files,tmp}
+sudo cp /tmp/deploy/app.py /tmp/deploy/sliced_file_info.py /tmp/deploy/pure_aes.py /tmp/deploy/requirements.txt /opt/printer-upload/
 sudo cp /tmp/deploy/templates/*.html /opt/printer-upload/templates/
 sudo cp /tmp/deploy/usb-refresh.sh /usr/local/bin/usb-refresh.sh
 sudo chmod 755 /usr/local/bin/usb-refresh.sh
 sudo chown -R root:root /opt/printer-upload
-sudo pip3 install flask werkzeug gunicorn --break-system-packages -q
+
+# Dedicated venv, not system Python + --break-system-packages — apt install
+# python3-venv first if this errors, it's not preinstalled on Lite images:
+sudo python3 -m venv /opt/printer-upload/venv
+sudo /opt/printer-upload/venv/bin/pip install -q -r /opt/printer-upload/requirements.txt
 ```
+Pins in `requirements.txt` are provisional (real, current, mutually-compatible
+versions, but not yet verified on ARMv6) — once this install succeeds, run
+`sudo /opt/printer-upload/venv/bin/pip freeze` and commit the fully-resolved
+output back into `requirements.txt` as the hardware-verified source of truth.
 
 Systemd unit (`/etc/systemd/system/printer-upload.service`):
 ```ini
@@ -82,17 +90,26 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/printer-upload
-ExecStart=/usr/bin/python3 -m gunicorn --bind 0.0.0.0:80 --workers 1 --timeout 300 app:app
+ExecStart=/opt/printer-upload/venv/bin/gunicorn --bind 0.0.0.0:80 --workers 1 --worker-class gthread --threads 4 --timeout 300 app:app
 Restart=always
 User=root
 
 [Install]
 WantedBy=multi-user.target
 ```
+`gthread` + a few threads (not just a bare sync worker) matters more on this
+board than it would on a beefier one: the Zero W is single-core, so one
+member's large upload over a slow wifi link would otherwise fully block
+every other request — including the printer's own polling and the admin
+dashboard — for the whole transfer. Threads cost little extra RAM (thread
+stacks, not a second Python process) and the app's request handling is
+already safe for it (each request opens/closes its own short-lived sqlite
+connection, nothing shared across requests).
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now printer-upload
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # expect 200
+sudo journalctl -u printer-upload -n 20 --no-pager   # confirm INFO-level app logs show up
 ```
 
 ## 5. Configure for the target printer

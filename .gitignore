@@ -10,13 +10,11 @@ uploads.db.bak-*
 .initial_admin_password
 files/
 
-# This session's own tooling — not part of the app
-.claude/
-scheduled_tasks.lock
-
 # Python
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
 
 # Large real member print files used for hands-on testing this session —
 # not sample/fixture data worth committing (large binaries, and some carry

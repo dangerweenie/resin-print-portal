@@ -21,6 +21,48 @@ we are only trying to get a sliced test file to appear on the printer.**
   (mDNS) does NOT resolve from a WSL2 client — use `resin.lan` instead. Same
   password for both SSH login and `sudo` on the Pi.
 
+## Build, test, and deploy
+
+Everything below runs from the repo root, on whatever machine you're
+developing on (not the Pi).
+
+### Build (set up a local dev environment)
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r printer-upload/requirements-dev.txt
+```
+Creates an isolated Python environment in `.venv/` (already gitignored) and
+installs the pinned app dependencies (Flask, Werkzeug, gunicorn) plus
+pytest — nothing is installed system-wide. Re-run the `pip install` line
+any time `printer-upload/requirements.txt` or `requirements-dev.txt`
+changes.
+
+### Test
+```bash
+.venv/bin/pytest printer-upload/tests/
+```
+This is the full off-hardware suite — no Raspberry Pi, root, or hardware
+access needed to run it. One test module needs root + loop-device tools and
+skips itself automatically when those aren't available; that's expected,
+not a failure. All tests should pass before deploying.
+
+### Deploy (push the app onto an already-set-up Pi)
+```bash
+scp -r printer-upload usb-refresh.sh captain@<pi-hostname>.lan:~/resin-print-portal/
+ssh captain@<pi-hostname>.lan 'cd ~/resin-print-portal/printer-upload && sudo bash deploy.sh'
+```
+Replace `<pi-hostname>` with the target Pi's hostname (e.g. `resin` for the
+first Pi — use `.lan`, not `.local`, from a WSL2 client). `sudo` will
+prompt for the Pi's password interactively. `deploy.sh` copies the app
+files into `/opt/printer-upload`, creates/updates a **separate** Python
+venv there (from `requirements.txt`) — distinct from the `.venv/` used for
+local dev/tests above — and restarts the `printer-upload` systemd service.
+
+If the target Pi hasn't been set up yet at all (fresh SD card, no
+`/opt/printer-upload` present), do that first — `docs/second-pi-setup.md`
+is the full step-by-step runbook. After deploying, `hw-tests/README.md`
+covers validating the change actually works against real gadget hardware.
+
 ## ⚠️ UPDATE 2026-08-21 — central hypothesis below is FALSIFIED, see "CONFIRMED
 ## WORKING" section further down before acting on anything in this block.
 

@@ -208,6 +208,49 @@ would never show up (exactly what happened with the real test data found
 mid-session). **Not yet set** — recommend `.pwsz,.pm7,.pm7m` for this
 specific Pi via Settings → File Type Filter.
 
+## Deployment ideas (not yet built)
+
+Captured 2026-08-22, discussing what "better than scp + manual `deploy.sh`
+over SSH" could look like once there's more than one Pi to keep in sync.
+
+- **NixOS/Nix for reproducible deploys — considered and rejected for the
+  Zero W specifically.** nixpkgs doesn't publish binary caches for armv6l,
+  so a full NixOS install means cross-compiling essentially everything
+  (including the kernel) from source on hardware that can barely run Flask
+  comfortably — there's a trail of forum threads of people hitting build
+  failures trying exactly this on real Zero W hardware, and the community
+  project that targeted it is archived/unmaintained. Worth revisiting on a
+  Zero 2 W (ARMv7 has real, if community-maintained, support) — not on this
+  board. A lighter middle ground if Nix's reproducibility is still
+  appealing later: a `nix-shell`/flake scoped to just the Python app's
+  dependencies, not the whole OS — sidesteps the kernel-build problem
+  entirely.
+- **Preferred direction: pull-based git deploy.** Pi clones this repo
+  instead of receiving scp'd files; redeploying becomes
+  `cd /opt/printer-upload && git pull && ./deploy.sh`. A systemd timer
+  running that on a schedule (every few minutes) turns it into "the Pi
+  stays in sync with whatever's merged to `main`" without needing any
+  inbound connection, public exposure, or new always-on service.
+- **Considered and deferred: a self-hosted GitHub Actions runner on the Pi**
+  for instant deploy-on-merge instead of poll lag. Real and commonly used
+  for exactly this kind of small-fleet hardware deploy, but the runner
+  process would eat into the Zero's already-tight 512MB persistently for
+  not much practical benefit over a few minutes of polling delay at this
+  scale (1-2 Pis). Revisit if poll lag actually becomes a problem, or once
+  there are enough Pis that instant fleet-wide deploys start mattering.
+- **Safety gate identified, not yet built**: an auto-deploy needs to check
+  whether a print is currently running before pulling/restarting. The
+  physical print itself is actually safe either way — once started, the
+  printer reads off the already-loaded USB gadget independent of the Flask
+  process, and `deploy.sh` never touches `/piusb.bin` or the gadget, only
+  the web service. What a mid-print auto-deploy *would* break is the portal
+  itself for the few seconds `systemctl restart` takes — dropping whatever
+  in-flight request a member happens to be mid-way through (an upload, the
+  safety checklist, hitting "I'm printing this now"). The fix: before
+  pulling/restarting, the deploy timer should check `print_jobs` status
+  (the existing `/api/status` endpoint already reports the current job) and
+  skip — retrying next tick — if something's marked `printing`.
+
 ## Not yet started
 - **Captive-portal wifi provisioning** (Comitup) + GPIO button trigger —
   deliberately not started yet given the risk of losing remote SSH access

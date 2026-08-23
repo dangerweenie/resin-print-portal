@@ -1,4 +1,4 @@
-import os, json, sqlite3, secrets
+import os, json, sqlite3, secrets, subprocess, threading
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, request, render_template, redirect, url_for, session, jsonify, send_file
@@ -11,13 +11,18 @@ from sliced_file_info import get_print_info, SlicedFileError
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
-import tempfile
-tempfile.tempdir = '/opt/printer-upload/tmp'
+app.logger.setLevel(os.environ.get('LOG_LEVEL', 'INFO'))
 
-BASE        = '/opt/printer-upload'
+BASE        = os.environ.get('PRINTER_UPLOAD_BASE', '/opt/printer-upload')
 UPLOAD_BASE = f'{BASE}/files'
 SETTINGS    = f'{BASE}/settings.json'
 DB          = f'{BASE}/uploads.db'
+USB_REFRESH_SCRIPT = os.environ.get('USB_REFRESH_SCRIPT', '/usr/local/bin/usb-refresh.sh')
+os.makedirs(UPLOAD_BASE, exist_ok=True)
+
+import tempfile
+os.makedirs(f'{BASE}/tmp', exist_ok=True)
+tempfile.tempdir = f'{BASE}/tmp'
 
 _kf = f'{BASE}/.secret_key'
 if os.path.exists(_kf):
@@ -86,7 +91,7 @@ def save_cfg(s):
     json.dump(s, open(SETTINGS,'w'), indent=2)
 
 def init_db():
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=10)
     c.execute('''CREATE TABLE IF NOT EXISTS uploads(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT, first TEXT, last TEXT, email TEXT, folder TEXT, filename TEXT
@@ -107,7 +112,7 @@ def init_db():
     c.commit(); c.close()
 
 def log(first, last, email, folder, fname):
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=10)
     c.execute('INSERT INTO uploads VALUES(NULL,?,?,?,?,?,?)',
         (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), first, last, email, folder, fname))
     c.commit(); c.close()
@@ -119,8 +124,13 @@ def folder_name(last, first):
 def extract_thumb(src):
     PNG_SIG = bytes([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])
     PNG_END = bytes([0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82])
+    # Embedded preview thumbnails live near the header (a few hundred KB at
+    # most), not scattered through gigabytes of layer data — cap the scan so
+    # a 100MB+ upload doesn't get fully loaded into RAM on a 512MB Pi.
+    MAX_SCAN = 16 * 1024 * 1024
     try:
-        data = open(src,'rb').read()
+        with open(src,'rb') as f:
+            data = f.read(MAX_SCAN)
         pngs = []; pos = 0
         while True:
             s2 = data.find(PNG_SIG, pos)
@@ -129,7 +139,8 @@ def extract_thumb(src):
             if e2 == -1: break
             pngs.append(data[s2:e2+8]); pos = e2+8
         if pngs: open(src+'.thumb.png','wb').write(max(pngs,key=len))
-    except: pass
+    except Exception as e:
+        app.logger.warning('thumbnail extraction failed for %s: %s', src, e)
 
 def admin_only(f):
     @wraps(f)
@@ -139,7 +150,7 @@ def admin_only(f):
     return d
 
 def get_member(member_id):
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     m = c.execute('SELECT * FROM members WHERE id=? AND active=1', (member_id,)).fetchone()
     c.close()
     return m
@@ -165,8 +176,29 @@ def post_slack(text):
         req = urllib.request.Request(url, data=json.dumps({'text': text}).encode(),
             headers={'Content-Type':'application/json'})
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass  # Slack posting is best-effort; never block the print flow on it
+    except Exception as e:
+        # Slack posting is best-effort; never block the print flow on it —
+        # but a broken webhook should still be visible somewhere.
+        app.logger.warning('slack webhook post failed: %s', e)
+
+def _log_usb_refresh_result(proc):
+    rc = proc.wait()
+    (app.logger.error if rc else app.logger.info)('usb-refresh.sh exited %s', rc)
+
+def trigger_usb_refresh():
+    """Launch usb-refresh.sh in the background — non-blocking, since the
+    unmount/copy/remount cycle takes several seconds and must not stall a
+    request thread. Returns (launched, thread): `launched` reflects whether
+    the process started at all, not whether the refresh itself succeeded —
+    that outcome is logged asynchronously once the script exits."""
+    try:
+        proc = subprocess.Popen([USB_REFRESH_SCRIPT])
+    except OSError as e:
+        app.logger.error('failed to launch usb-refresh.sh (%s): %s', USB_REFRESH_SCRIPT, e)
+        return False, None
+    t = threading.Thread(target=_log_usb_refresh_result, args=(proc,), daemon=True)
+    t.start()
+    return True, t
 
 init_db()
 if not os.path.exists(SETTINGS): save_cfg(DEFAULTS)
@@ -185,7 +217,7 @@ def index():
     if request.method == 'POST':
         email = request.form.get('email','').strip().lower()
         password = request.form.get('password','')
-        c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+        c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
         m = c.execute('SELECT * FROM members WHERE email=? AND active=1', (email,)).fetchone()
         c.close()
         if m and check_password_hash(m['password_hash'], password):
@@ -213,7 +245,7 @@ def change_password():
         if not pw or pw != confirm:
             err = "Passwords didn't match or were empty."
         else:
-            c = sqlite3.connect(DB)
+            c = sqlite3.connect(DB, timeout=10)
             c.execute('UPDATE members SET password_hash=?, must_change_password=0 WHERE id=?',
                 (generate_password_hash(pw), mid))
             c.commit(); c.close()
@@ -246,7 +278,7 @@ def current_job_display(job):
     return d
 
 def get_current_job():
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     job = c.execute("SELECT * FROM print_jobs WHERE status='printing' ORDER BY id DESC LIMIT 1").fetchone()
     c.close()
     return current_job_display(job)
@@ -327,14 +359,16 @@ def start_print(folder):
     try:
         info = get_print_info(fp)
         est_seconds, exact = info['estimated_seconds'], info['exact']
-    except (SlicedFileError, Exception):
-        pass
+    except SlicedFileError as e:
+        app.logger.warning('no ETA for %s: %s', fp, e)
+    except Exception:
+        app.logger.exception('unexpected error parsing print info for %s', fp)
 
     now = datetime.now()
     started_at = now.strftime('%Y-%m-%d %H:%M:%S')
     eta_at = (now + timedelta(seconds=est_seconds)).strftime('%Y-%m-%d %H:%M:%S') if est_seconds else None
 
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=10)
     # Only one physical job at a time on this printer — supersede whatever was marked 'printing'.
     c.execute("UPDATE print_jobs SET status='ended', ended_at=? WHERE status='printing'", (started_at,))
     c.execute('''INSERT INTO print_jobs
@@ -343,7 +377,7 @@ def start_print(folder):
         (m['id'], folder, fname, started_at, est_seconds, int(exact), eta_at))
     c.commit(); c.close()
 
-    os.system('/usr/local/bin/usb-refresh.sh &')
+    trigger_usb_refresh()
 
     eta_txt = f" — ETA {est_seconds//3600}h{(est_seconds%3600)//60}m ({'exact' if exact else 'estimated'})" if est_seconds else " — ETA unknown"
     post_slack(f":large_green_circle: *{m['first']} {m['last']}* started printing `{fname}` on *{s['printer_name']}*{eta_txt}")
@@ -371,7 +405,7 @@ def api_status():
     job = get_current_job()
     current = None
     if job and job['display_status'] != 'ended':
-        c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+        c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
         mem = c.execute('SELECT first,last FROM members WHERE id=?', (job['member_id'],)).fetchone()
         c.close()
         current = {
@@ -383,7 +417,7 @@ def api_status():
             'remaining': job.get('remaining_human'),
             'eta_exact': bool(job['eta_exact']),
         }
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     hist_rows = c.execute('''SELECT print_jobs.*, members.first, members.last FROM print_jobs
         LEFT JOIN members ON members.id = print_jobs.member_id
         ORDER BY print_jobs.id DESC LIMIT 25''').fetchall()
@@ -427,7 +461,7 @@ def admin_dashboard():
             if f.endswith('.thumb.png'): continue
             files_count += 1
             total_bytes += os.path.getsize(os.path.join(dp, f))
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     recent = c.execute('SELECT * FROM uploads ORDER BY id DESC LIMIT 10').fetchall()
     c.close()
     return render_template('admin_dashboard.html', s=cfg(),
@@ -468,7 +502,7 @@ def admin_delete():
 @app.route('/admin/log')
 @admin_only
 def admin_log():
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     logs = c.execute('SELECT * FROM uploads ORDER BY id DESC').fetchall()
     jobs = c.execute('''SELECT print_jobs.*, members.first, members.last FROM print_jobs
         LEFT JOIN members ON members.id = print_jobs.member_id
@@ -491,7 +525,7 @@ def admin_members():
                 err = "All fields are required."
             else:
                 try:
-                    c = sqlite3.connect(DB)
+                    c = sqlite3.connect(DB, timeout=10)
                     c.execute('''INSERT INTO members (first,last,email,password_hash,must_change_password,active,created_at,created_by)
                         VALUES (?,?,?,?,1,1,?,?)''',
                         (first, last, email, generate_password_hash(pw),
@@ -505,18 +539,18 @@ def admin_members():
             mid = request.form.get('member_id')
             newpw = request.form.get('new_password','')
             if newpw:
-                c = sqlite3.connect(DB)
+                c = sqlite3.connect(DB, timeout=10)
                 c.execute('UPDATE members SET password_hash=?, must_change_password=1 WHERE id=?',
                     (generate_password_hash(newpw), mid))
                 c.commit(); c.close()
                 msg = "Password reset — member will be asked to change it on next login."
         elif a == 'toggle_active':
             mid = request.form.get('member_id')
-            c = sqlite3.connect(DB)
+            c = sqlite3.connect(DB, timeout=10)
             c.execute('UPDATE members SET active = 1 - active WHERE id=?', (mid,))
             c.commit(); c.close()
             msg = "Member status updated."
-    c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
     members = c.execute('SELECT * FROM members ORDER BY last, first').fetchall()
     c.close()
     return render_template('admin_members.html', s=cfg(), members=members, msg=msg, err=err)
@@ -552,8 +586,8 @@ def admin_settings():
                 save_cfg(s); msg = "Password updated."
             else: msg = "Passwords didn't match or were empty."
         elif a == 'usb':
-            os.system('/usr/local/bin/usb-refresh.sh &')
-            msg = "USB refresh triggered."
+            ok, _ = trigger_usb_refresh()
+            msg = "USB refresh triggered." if ok else "Failed to launch USB refresh — check the logs."
     return render_template('admin_settings.html', s=s, msg=msg, api_key=API_KEY)
 
 if __name__ == '__main__':
