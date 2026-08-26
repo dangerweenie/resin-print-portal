@@ -28,6 +28,12 @@
         · past its estimated finish time
       {% endif %}
     </div>
+    {% if current_job.folder == folder %}
+    <form method="POST" action="/my/{{ folder }}/print/finish" class="print-form" style="margin-top:.9rem"
+          onsubmit="return confirm('Mark this print finished and remove it from the printer?')">
+      <button class="btn" style="padding:.45rem 1rem;font-size:.7rem" type="submit">✓ I've removed it — mark finished</button>
+    </form>
+    {% endif %}
   </div>
   {% endif %}
 

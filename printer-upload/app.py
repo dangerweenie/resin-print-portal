@@ -123,6 +123,16 @@ def init_db():
         started_at TEXT, estimated_seconds INTEGER, eta_exact INTEGER,
         estimated_complete_at TEXT, ended_at TEXT, status TEXT DEFAULT 'printing'
     )''')
+    # Added after the table already existed in the field — CREATE TABLE IF
+    # NOT EXISTS above is a no-op against an already-provisioned Pi's DB, so
+    # this has to be a real migration, not just a wider CREATE statement.
+    # Tracks *how* a job stopped printing: 'member_finished' (self-reported,
+    # the honest-actor path), 'superseded' (someone started a different
+    # print without ever confirming this one done), or 'admin_cleared'
+    # (staff had to step in). NULL for rows written before this migration.
+    cols = [r[1] for r in c.execute('PRAGMA table_info(print_jobs)').fetchall()]
+    if 'end_reason' not in cols:
+        c.execute('ALTER TABLE print_jobs ADD COLUMN end_reason TEXT')
     c.commit(); c.close()
 
 def log(first, last, email, folder, fname):
@@ -384,7 +394,8 @@ def start_print(folder):
 
     c = sqlite3.connect(DB, timeout=10)
     # Only one physical job at a time on this printer — supersede whatever was marked 'printing'.
-    c.execute("UPDATE print_jobs SET status='ended', ended_at=? WHERE status='printing'", (started_at,))
+    # end_reason='superseded' flags that whoever had it never confirmed it finished themselves.
+    c.execute("UPDATE print_jobs SET status='ended', ended_at=?, end_reason='superseded' WHERE status='printing'", (started_at,))
     c.execute('''INSERT INTO print_jobs
         (member_id, folder, filename, started_at, estimated_seconds, eta_exact, estimated_complete_at, status)
         VALUES (?,?,?,?,?,?,?,'printing')''',
@@ -396,6 +407,32 @@ def start_print(folder):
     eta_txt = f" — ETA {est_seconds//3600}h{(est_seconds%3600)//60}m ({'exact' if exact else 'estimated'})" if est_seconds else " — ETA unknown"
     post_slack(f":large_green_circle: *{m['first']} {m['last']}* started printing `{fname}` on *{s['printer_name']}*{eta_txt}")
 
+    return redirect(url_for('folder_view', folder=folder))
+
+@app.route('/my/<folder>/print/finish', methods=['POST'])
+@member_required
+def finish_print(folder):
+    """Self-reported completion: the member confirms they've pulled their
+    print and removed it from the printer, so the drive gets cleared right
+    away instead of sitting there until someone else's print supersedes it.
+    Only lets a member finish their OWN active job — not whoever else's
+    print might currently be occupying the (single, shared) printer."""
+    m = get_member(session['member_id'])
+    own_folder = folder_name(m['last'], m['first'])
+    if folder != own_folder: return redirect(url_for('index'))
+
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
+    job = c.execute("SELECT * FROM print_jobs WHERE status='printing' ORDER BY id DESC LIMIT 1").fetchone()
+    if job and job['folder'] == own_folder:
+        ended_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute("UPDATE print_jobs SET status='ended', ended_at=?, end_reason='member_finished' WHERE id=?",
+            (ended_at, job['id']))
+        c.commit(); c.close()
+        trigger_usb_refresh()
+        post_slack(f":checkered_flag: *{m['first']} {m['last']}* marked `{job['filename']}` finished "
+                    f"and removed it from *{cfg()['printer_name']}*.")
+    else:
+        c.close()
     return redirect(url_for('folder_view', folder=folder))
 
 @app.route('/thumb/<folder>/<filename>')
@@ -440,6 +477,7 @@ def api_status():
         'member': f"{r['first']} {r['last']}" if r['first'] else 'unknown',
         'filename': r['filename'], 'started_at': r['started_at'], 'ended_at': r['ended_at'],
         'estimated_seconds': r['estimated_seconds'], 'eta_exact': bool(r['eta_exact']),
+        'end_reason': r['end_reason'],
     } for r in hist_rows]
     return jsonify({'printer_name': s['printer_name'], 'current_job': current, 'history': history})
 
@@ -481,6 +519,30 @@ def admin_dashboard():
     return render_template('admin_dashboard.html', s=cfg(),
         folders=folders, files_count=files_count,
         total_mb=round(total_bytes/1024/1024,1), recent=recent, current_job=get_current_job())
+
+@app.route('/admin/print/finish', methods=['POST'])
+@admin_only
+def admin_finish_print():
+    """Staff backstop for the self-report system: clears whatever's
+    currently marked 'printing' even if the member who started it never
+    confirms themselves (forgot, left, stopped showing up). Distinct
+    end_reason='admin_cleared' from a member's own 'member_finished' so the
+    log shows who needed staff to step in vs. who closed their own loop."""
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
+    job = c.execute("SELECT * FROM print_jobs WHERE status='printing' ORDER BY id DESC LIMIT 1").fetchone()
+    if job:
+        ended_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        mem = c.execute('SELECT first,last FROM members WHERE id=?', (job['member_id'],)).fetchone()
+        c.execute("UPDATE print_jobs SET status='ended', ended_at=?, end_reason='admin_cleared' WHERE id=?",
+            (ended_at, job['id']))
+        c.commit(); c.close()
+        trigger_usb_refresh()
+        who = f"{mem['first']} {mem['last']}" if mem else 'unknown'
+        post_slack(f":warning: Staff force-cleared `{job['filename']}` ({who}'s print) from "
+                    f"*{cfg()['printer_name']}* — it wasn't marked finished by the member.")
+    else:
+        c.close()
+    return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/files')
 @admin_only

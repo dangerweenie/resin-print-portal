@@ -128,3 +128,31 @@ def test_current_job_display_ended(app_module):
 
 def test_tmp_dir_created_on_import(app_module, tmp_path):
     assert os.path.isdir(str(tmp_path / 'tmp'))
+
+
+# ---------------------------------------------------------------------------
+# init_db migration: end_reason column added to a pre-existing print_jobs
+# table (the shape any already-deployed Pi's DB is in before this upgrade)
+# ---------------------------------------------------------------------------
+
+def test_init_db_adds_end_reason_to_preexisting_table(app_module):
+    import sqlite3
+    c = sqlite3.connect(app_module.DB)
+    c.execute("DROP TABLE print_jobs")
+    c.execute('''CREATE TABLE print_jobs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id INTEGER, folder TEXT, filename TEXT,
+        started_at TEXT, estimated_seconds INTEGER, eta_exact INTEGER,
+        estimated_complete_at TEXT, ended_at TEXT, status TEXT DEFAULT 'printing'
+    )''')
+    c.execute("INSERT INTO print_jobs (member_id, folder, filename, started_at) VALUES (1,'f','x.goo','2026-01-01 00:00:00')")
+    c.commit(); c.close()
+
+    app_module.init_db()
+
+    c = sqlite3.connect(app_module.DB); c.row_factory = sqlite3.Row
+    cols = [r[1] for r in c.execute('PRAGMA table_info(print_jobs)').fetchall()]
+    row = c.execute("SELECT * FROM print_jobs WHERE filename='x.goo'").fetchone()
+    c.close()
+    assert 'end_reason' in cols
+    assert row['end_reason'] is None  # pre-existing row survives the migration, untouched

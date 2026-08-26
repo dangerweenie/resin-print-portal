@@ -17,7 +17,7 @@
   {% if jobs %}
   <div class="card" style="padding:0;overflow:hidden;margin-bottom:2.5rem">
     <table>
-      <thead><tr><th>#</th><th>Started</th><th>Ended</th><th>Member</th><th>File</th><th>ETA</th><th>Status</th></tr></thead>
+      <thead><tr><th>#</th><th>Started</th><th>Ended</th><th>Member</th><th>File</th><th>ETA</th><th>Status</th><th>Ended by</th></tr></thead>
       <tbody>
         {% for j in jobs %}
         <tr>
@@ -30,6 +30,12 @@
             {% if j.estimated_seconds %}{{ (j.estimated_seconds // 3600) }}h{{ ((j.estimated_seconds % 3600) // 60) }}m{{ ' (exact)' if j.eta_exact else ' (est.)' }}{% else %}—{% endif %}
           </td>
           <td>{{ j.status }}</td>
+          <td>
+            {% if j.end_reason == 'member_finished' %}<span style="color:var(--ok)">member confirmed</span>
+            {% elif j.end_reason == 'superseded' %}<span style="color:var(--accent)">superseded — not confirmed</span>
+            {% elif j.end_reason == 'admin_cleared' %}<span style="color:var(--err)">staff force-cleared</span>
+            {% else %}<span style="color:var(--dim)">—</span>{% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>

@@ -225,6 +225,97 @@ def test_start_print_supersedes_previous_job(client, make_member, app_module, mo
 
 
 # ---------------------------------------------------------------------------
+# finish_print (member self-report) / admin_finish_print (staff backstop)
+# ---------------------------------------------------------------------------
+
+def test_finish_print_marks_own_job_ended_and_triggers_refresh(client, make_member, app_module, monkeypatch, tmp_path):
+    make_member(first='Ed', last='Diamond', email='ed@example.com', password='pw123')
+    _login_member(client, 'ed@example.com', 'pw123')
+    monkeypatch.setattr(app_module, 'USB_REFRESH_SCRIPT', _exit0_script(tmp_path))
+    folder_dir = os.path.join(app_module.UPLOAD_BASE, 'diamond_ed')
+    sf.write_goo(os.path.join(folder_dir, 'model.goo'), print_time=100)
+    client.post('/my/diamond_ed/print', data={'filename': 'model.goo', **_checklist_data(app_module)})
+
+    resp = client.post('/my/diamond_ed/print/finish', follow_redirects=False)
+    assert resp.status_code == 302
+    c = sqlite3.connect(app_module.DB); c.row_factory = sqlite3.Row
+    job = c.execute("SELECT * FROM print_jobs ORDER BY id DESC LIMIT 1").fetchone()
+    c.close()
+    assert job['status'] == 'ended'
+    assert job['end_reason'] == 'member_finished'
+    assert job['ended_at'] is not None
+
+
+def test_finish_print_ignores_other_members_active_job(client, make_member, app_module, monkeypatch, tmp_path):
+    make_member(first='Ed', last='Diamond', email='ed@example.com', password='pw123')
+    make_member(first='Sam', last='Other', email='sam@example.com', password='pw456')
+    _login_member(client, 'ed@example.com', 'pw123')
+    monkeypatch.setattr(app_module, 'USB_REFRESH_SCRIPT', _exit0_script(tmp_path))
+    folder_dir = os.path.join(app_module.UPLOAD_BASE, 'diamond_ed')
+    sf.write_goo(os.path.join(folder_dir, 'model.goo'), print_time=100)
+    client.post('/my/diamond_ed/print', data={'filename': 'model.goo', **_checklist_data(app_module)})
+    client.get('/logout')
+
+    _login_member(client, 'sam@example.com', 'pw456')
+    client.post('/my/other_sam/print/finish')
+
+    c = sqlite3.connect(app_module.DB); c.row_factory = sqlite3.Row
+    job = c.execute("SELECT * FROM print_jobs WHERE status='printing'").fetchone()
+    c.close()
+    assert job is not None
+    assert job['filename'] == 'model.goo'
+
+
+def test_finish_print_noop_when_nothing_printing(client, make_member, app_module):
+    make_member(first='Ed', last='Diamond', email='ed@example.com', password='pw123')
+    _login_member(client, 'ed@example.com', 'pw123')
+    resp = client.post('/my/diamond_ed/print/finish', follow_redirects=False)
+    assert resp.status_code == 302  # redirects back to folder_view, no error
+
+
+def test_start_print_supersede_sets_end_reason(client, make_member, app_module, monkeypatch, tmp_path):
+    make_member(first='Ed', last='Diamond', email='ed@example.com', password='pw123')
+    _login_member(client, 'ed@example.com', 'pw123')
+    monkeypatch.setattr(app_module, 'USB_REFRESH_SCRIPT', _exit0_script(tmp_path))
+    folder_dir = os.path.join(app_module.UPLOAD_BASE, 'diamond_ed')
+    sf.write_goo(os.path.join(folder_dir, 'first.goo'), print_time=100)
+    sf.write_goo(os.path.join(folder_dir, 'second.goo'), print_time=200)
+    client.post('/my/diamond_ed/print', data={'filename': 'first.goo', **_checklist_data(app_module)})
+    client.post('/my/diamond_ed/print', data={'filename': 'second.goo', **_checklist_data(app_module)})
+    c = sqlite3.connect(app_module.DB); c.row_factory = sqlite3.Row
+    first = c.execute("SELECT end_reason FROM print_jobs WHERE filename='first.goo'").fetchone()
+    c.close()
+    assert first['end_reason'] == 'superseded'
+
+
+def test_admin_finish_print_clears_current_job(client, make_member, app_module, monkeypatch, tmp_path):
+    make_member(first='Ed', last='Diamond', email='ed@example.com', password='pw123')
+    _login_member(client, 'ed@example.com', 'pw123')
+    monkeypatch.setattr(app_module, 'USB_REFRESH_SCRIPT', _exit0_script(tmp_path))
+    folder_dir = os.path.join(app_module.UPLOAD_BASE, 'diamond_ed')
+    sf.write_goo(os.path.join(folder_dir, 'model.goo'), print_time=100)
+    client.post('/my/diamond_ed/print', data={'filename': 'model.goo', **_checklist_data(app_module)})
+    client.get('/logout')
+
+    resp = _admin_login(client, app_module)
+    assert resp.status_code == 302
+    resp = client.post('/admin/print/finish', follow_redirects=False)
+    assert resp.status_code == 302
+
+    c = sqlite3.connect(app_module.DB); c.row_factory = sqlite3.Row
+    job = c.execute("SELECT * FROM print_jobs ORDER BY id DESC LIMIT 1").fetchone()
+    c.close()
+    assert job['status'] == 'ended'
+    assert job['end_reason'] == 'admin_cleared'
+
+
+def test_admin_finish_print_noop_when_nothing_printing(client, app_module):
+    _admin_login(client, app_module)
+    resp = client.post('/admin/print/finish', follow_redirects=False)
+    assert resp.status_code == 302
+
+
+# ---------------------------------------------------------------------------
 # /api/status
 # ---------------------------------------------------------------------------
 

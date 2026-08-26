@@ -23,6 +23,10 @@
       Started {{ current_job.started_at }}
       {% if current_job.display_status == 'printing' and current_job.remaining_human %} · ~{{ current_job.remaining_human }} remaining{% endif %}
     </div>
+    <form method="POST" action="/admin/print/finish" style="margin-top:.9rem"
+          onsubmit="return confirm('Force-clear this print from the drive? Only do this if the member isn\'t going to mark it finished themselves.')">
+      <button class="btn btn-admin" style="padding:.45rem 1rem;font-size:.7rem" type="submit">Force-clear from printer</button>
+    </form>
   </div>
   {% endif %}
 
