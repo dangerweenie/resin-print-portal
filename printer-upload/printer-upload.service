@@ -1,0 +1,12 @@
+[Unit]
+Description=Resin Printer Upload Portal
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/printer-upload
+ExecStart=/opt/printer-upload/venv/bin/gunicorn --bind 0.0.0.0:80 --workers 1 --worker-class gthread --threads 4 --timeout 300 app:app
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

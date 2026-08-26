@@ -1,0 +1,13 @@
+[Unit]
+Description=Load USB mass-storage gadget for resin printer
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe g_mass_storage file=/piusb.bin stall=0 ro=0 removable=1
+ExecStop=/sbin/modprobe -r g_mass_storage
+
+[Install]
+WantedBy=multi-user.target

@@ -13,8 +13,16 @@ we are only trying to get a sliced test file to appear on the printer.**
 3. **Anycubic Photon (P1 / older Anycubic)** — untested here yet.
 
 ## Hardware notes
-- Pi is a Zero 2 W (RP3A0 chipset). Use the INNER micro-USB port labelled `USB`
-  (OTG/data), NOT the outer `PWR` port (no data lines on any Zero).
+- **2026-08-23 fleet decision**: every *new* Pi is a **Zero W** (original,
+  ARMv6, single micro-USB port), not Zero 2 W — cost savings. The first Pi
+  (`resin`, serving the M7 Pro, everything documented below) stays a Zero 2
+  W; that history isn't affected. See `docs/second-pi-setup.md` for the
+  Zero W runbook, now driven by `provisioning/provision-sd.sh` for
+  unattended flash-and-boot setup (NOT YET hardware-verified — see that
+  doc's status note).
+- First Pi (`resin`) is a Zero 2 W (RP3A0 chipset). Use the INNER micro-USB
+  port labelled `USB` (OTG/data), NOT the outer `PWR` port (no data lines on
+  any Zero).
 - Pi draws power from the printer's USB port; printer must be ON for the Pi to run.
 - One Pi serves ONE printer (a USB gadget can't split to multiple hosts).
 - SSH: `captain@resin.lan` (hostname `resin`, user `captain`). NOTE: `resin.local`

@@ -1,118 +1,122 @@
-# Second Pi Setup Runbook (Pi Zero 1 W)
+# New Pi Setup Runbook (Pi Zero W — fleet standard)
 
-Everything learned building the first Pi (`resin`, Zero 2 W, serving the M7
-Pro), condensed into a repeatable checklist for the second Pi. See
-`CLAUDE.md` for the low-level gadget details and `resin_plans.md` for the
-full narrative/decision history — this doc is just the "do these steps"
-version.
+## ⚠️ 2026-08-23 — fleet hardware decision changed
+The project is standardizing on the original **Pi Zero W** (not Zero 2 W) for
+every printer going forward, for cost savings. The first Pi (`resin`, serving
+the M7 Pro) is a Zero 2 W and stays that way — see `CLAUDE.md` for its whole
+debugging history — but every *new* Pi from here on is a Zero W. This doc
+used to be framed as "the second Pi" (a one-off); it's now the standard
+runbook for any new Pi.
 
-## 1. Flash the OS
-- **Raspberry Pi Imager**, board = **Raspberry Pi Zero** (not Zero 2 W —
-  Imager filters image compatibility by board choice, and picking the wrong
-  one risks an image that won't boot on ARMv6 hardware).
-- OS: **Raspberry Pi OS Lite (32-bit)**, Trixie. Confirmed this build still
-  supports the original Zero W's ARMv6 chip — verified against current
-  sources, not just assumption, since getting this wrong means a Pi that
-  won't boot at all. (Debian is expected to drop ARMv6 after Trixie, so this
-  is likely the last generation that supports this board — not a concern
-  now, just don't expect to OS-upgrade this Pi indefinitely later.)
-- In Imager's advanced options (the gear icon): set hostname, enable SSH,
-  set the `captain` user + password, and — if the target site's wifi is
-  already known — preload that SSID/password too. If the site's wifi is
-  *not* known ahead of time, see the captive-portal note under "Not yet
-  started" below; that isn't built yet, so for now you'll need to know the
-  network in advance or plug in a keyboard/monitor once.
+## ⚠️ 2026-08-23 — flashing is now automated, not a manual Imager-wizard walk
+Everything in "1. Flash the OS" used to mean clicking through Raspberry Pi
+Imager's Advanced Options each time. That's replaced by
+`provisioning/provision-sd.sh` (repo root), which can flash + partition
+the SD card itself (`--device` mode) or just provision an
+already-flashed one (`--boot` mode), then hands off to cloud-init to
+finish the rest of this whole runbook (gadget setup, app deploy)
+unattended. See below.
 
-## 2. First boot / verify
+**Status: NOT YET HARDWARE-VERIFIED.** The automated path was built from
+current Raspberry Pi OS Trixie docs/source, not confirmed against a real
+card yet. Run through it once, watch it actually come up, before relying on
+it for a real site deploy. If it doesn't work, the old manual steps
+(preserved further down under "Manual fallback") still get you there.
+
+## ⚠️ 2026-08-25 — provisioning rebuilt on cloud-init, not the old firstrun.sh hack
+The first version of this automated path disabled cloud-init outright and
+drove hostname/user/Wi-Fi setup through the legacy
+`systemd.run=/boot/firmware/firstrun.sh systemd.unit=kernel-command-line.target`
+kernel-cmdline trick instead (same mechanism Raspberry Pi Imager's "Advanced
+Options" customization uses). That's explicitly the path Raspberry Pi's own
+Trixie announcement calls "the legacy first-boot customisation system" —
+Trixie ships cloud-init as the native replacement, with its own NoCloud
+datasource (`user-data`/`network-config`/`meta-data` on the boot partition)
+already present on every image, just unfilled by default. Fighting it
+instead of using it needed a fragile two-boot dance: stage one
+(`firstrun.sh`) ran during an early, network-less systemd target, then had
+to force a hard reboot (`echo b > /proc/sysrq-trigger` — a plain `reboot`
+was confirmed to hang there) into a *second* boot before stage two
+(`provision-stage2.sh`, gated on `network-online.target`) could do anything
+needing real networking. It also had a live bug: the Wi-Fi regulatory
+domain was written into `cmdline.txt` by `raspi-config nonint
+do_wifi_country`, which `firstrun.sh`'s own cleanup step then silently
+clobbered by restoring `cmdline.txt` from an earlier snapshot.
+
+`provision-sd.sh` now writes real `user-data`/`network-config` instead of
+blank templates: hostname/user/password/SSH via `user-data`, and Wi-Fi
+(SSID/password/**regulatory domain**) via `network-config`'s netplan
+`wifis:` block — the same format this image's own template already
+documented in its comments. cloud-init sequences things correctly on its
+own (network-config is applied before the interface ever comes up;
+`runcmd` only fires once real networking is up), so the two-stage
+reboot-and-wait dance is gone — `provisioning/provision-boot.sh` (which
+replaces both `firstrun.sh` and `provision-stage2.sh`) runs once, via
+`runcmd`, and handles the USB gadget + app deploy in one pass, then
+reboots itself once at the end so the new `config.txt` dtoverlay (device
+tree overlays only load at firmware/bootloader time, not hot-reloadable)
+takes effect.
+
+## 1. Flash + provision (automated)
+
+One command, card to fully-provisioned, including partitioning the SD
+card itself. Download a **Raspberry Pi OS Lite (32-bit), Trixie** image
+(`.img`, `.img.xz`, or `.img.zst`) first, then:
 ```bash
-ssh captain@<hostname>.lan   # NOT .local — mDNS doesn't resolve from this
-                              # WSL2 client; use .lan (or the Pi's IP)
-uname -m && cat /etc/os-release   # expect armv6l or armv7l, Raspbian 13 trixie
+sudo ./provisioning/provision-sd.sh --device /dev/sdX --image ~/Downloads/raspios-lite.img.xz \
+  --hostname resin3 --password '<pi login password>' \
+  --wifi-ssid 'SiteWifi' --wifi-password '<wifi password>'
 ```
+`--device` takes the SD card's **whole-disk** device node (e.g. `/dev/sdb`,
+not `/dev/sdb1`) — check `lsblk` first to be sure which one is the card,
+not your own machine's disk. The script refuses to run if the device
+looks like it backs your own `/`, `/boot`, or `/home`, or if it's over
+128GB (bigger than any card this fleet uses), and prints the device's
+size/model and requires you to type the device path back to confirm
+before it writes anything — this step erases the entire card, so that
+confirmation is deliberately not skippable by default (`--yes` exists for
+scripted use, not recommended when running it by hand).
 
-## 3. USB gadget setup
-Hardware: use the Zero W's **only** micro-USB port carefully — unlike the
-Zero 2 W, the original Zero/Zero W has a single data-capable port doing
-double duty for power *and* OTG data (check silkscreen; some Zero W boards
-label it differently than the Zero 2 W's dual-port layout). Confirm which
-port is which on the actual board before connecting to the printer.
-
-`/boot/firmware/config.txt`, under `[all]`:
-```
-dtoverlay=dwc2,dr_mode=peripheral
-```
-(On the original Zero W this may matter less than on the Zero 2 W — the
-Zero W doesn't default to host mode the way the Zero 2 W can — but set it
-explicitly anyway for consistency.)
-
-Build the gadget image — **recommend bare FAT32, no partition table** for a
-fresh build (simpler; avoids the `losetup -fP` partition-handling dance the
-first Pi's pre-existing image needed). The current `usb-refresh.sh` handles
-either format correctly, so this isn't a hard requirement, just the
-simpler starting point:
+Already flashed the card yourself (Imager, `dd`, etc.) and just want the
+provisioning part? Mount its boot partition and use `--boot` instead of
+`--device`/`--image`:
 ```bash
-sudo dd if=/dev/zero of=/piusb.bin bs=1M count=8192 status=progress
-sudo mkdosfs /piusb.bin -F 32 -I -n RESINUSB
-sudo modprobe g_mass_storage file=/piusb.bin stall=0 ro=0 removable=1
+./provisioning/provision-sd.sh --boot /path/to/mounted/bootfs \
+  --hostname resin3 --password '<pi login password>' \
+  --wifi-ssid 'SiteWifi' --wifi-password '<wifi password>'
 ```
 
-## 4. Deploy the Flask portal
-No git repo yet — copy the app directory over directly (adjust the
-hostname):
-```bash
-# From this machine:
-scp -r printer-upload captain@<hostname>.lan:/tmp/deploy
-scp usb-refresh.sh captain@<hostname>.lan:/tmp/deploy/
+Either way: (`--user` defaults to `captain`, `--wifi-country` defaults to
+`US`.) The site's Wi-Fi has to be known at flash time — there's still no
+captive-portal/in-field provisioning (see "Not yet started" below).
 
-# On the Pi:
-sudo mkdir -p /opt/printer-upload/{templates,files,tmp}
-sudo cp /tmp/deploy/app.py /tmp/deploy/sliced_file_info.py /tmp/deploy/pure_aes.py /tmp/deploy/requirements.txt /opt/printer-upload/
-sudo cp /tmp/deploy/templates/*.html /opt/printer-upload/templates/
-sudo cp /tmp/deploy/usb-refresh.sh /usr/local/bin/usb-refresh.sh
-sudo chmod 755 /usr/local/bin/usb-refresh.sh
-sudo chown -R root:root /opt/printer-upload
+2. Eject the card, put it in the Pi, power it on, and wait — cloud-init
+   brings up hostname/user/SSH/Wi-Fi on the first boot (from `user-data`/
+   `network-config`), then its `runcmd` stage (which only fires once real
+   networking is up, so `apt`/`pip install` just works — no separate
+   network-wait stage needed) runs `provisioning/provision-boot.sh` for
+   the USB gadget + app deploy. That script reboots itself once more at
+   the end so the new `config.txt` dtoverlay loads. A few minutes total.
+3. Verify:
+   ```bash
+   ssh captain@<hostname>.lan   # NOT .local — mDNS doesn't resolve from
+                                 # this WSL2 client; use .lan (or the IP)
+   cat /var/log/provision-boot.log   # confirm the gadget+app deploy step finished
+   curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # expect 200
+   ```
+   If SSH never comes up at all, pull the card and check
+   `/boot-progress.log` and `/var/log/cloud-init-output.log` (root needed
+   for the latter) on the boot/root partitions from a card reader —
+   between them they show how far a stuck boot actually got.
 
-# Dedicated venv, not system Python + --break-system-packages — apt install
-# python3-venv first if this errors, it's not preinstalled on Lite images:
-sudo python3 -m venv /opt/printer-upload/venv
-sudo /opt/printer-upload/venv/bin/pip install -q -r /opt/printer-upload/requirements.txt
-```
-Pins in `requirements.txt` are provisional (real, current, mutually-compatible
-versions, but not yet verified on ARMv6) — once this install succeeds, run
-`sudo /opt/printer-upload/venv/bin/pip freeze` and commit the fully-resolved
-output back into `requirements.txt` as the hardware-verified source of truth.
+From here, the Pi has: hostname/user/SSH set, Wi-Fi connected, Bluetooth/
+avahi/triggerhappy disabled, `dtoverlay=dwc2,dr_mode=peripheral` +
+`gpu_mem=16` in `config.txt`, a bare-FAT32 `/piusb.bin` with a
+`piusb-gadget` systemd unit that (re)loads the gadget on **every** boot —
+not just the first, which the old manual recipe never covered — and the
+Flask portal deployed and running under systemd.
 
-Systemd unit (`/etc/systemd/system/printer-upload.service`):
-```ini
-[Unit]
-Description=Resin Printer Upload Portal
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/printer-upload
-ExecStart=/opt/printer-upload/venv/bin/gunicorn --bind 0.0.0.0:80 --workers 1 --worker-class gthread --threads 4 --timeout 300 app:app
-Restart=always
-User=root
-
-[Install]
-WantedBy=multi-user.target
-```
-`gthread` + a few threads (not just a bare sync worker) matters more on this
-board than it would on a beefier one: the Zero W is single-core, so one
-member's large upload over a slow wifi link would otherwise fully block
-every other request — including the printer's own polling and the admin
-dashboard — for the whole transfer. Threads cost little extra RAM (thread
-stacks, not a second Python process) and the app's request handling is
-already safe for it (each request opens/closes its own short-lived sqlite
-connection, nothing shared across requests).
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now printer-upload
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # expect 200
-sudo journalctl -u printer-upload -n 20 --no-pager   # confirm INFO-level app logs show up
-```
-
-## 5. Configure for the target printer
+## 2. Configure for the target printer (still manual)
 Log into `/admin` (username `captain`, password from
 `/opt/printer-upload/.initial_admin_password` — generated fresh on first
 run, not a fixed default; change it via Settings and delete that file),
@@ -129,7 +133,10 @@ then in Settings:
   has different physical-check needs (different vat/plate mechanism, etc).
 - **Slack webhook** — optional, same as the first Pi.
 
-## 6. Certify members
+This step is inherently printer-specific and manual — not something the
+provisioning script attempts.
+
+## 3. Certify members
 Each Pi has its own separate `members` table — **certifying someone on the
 first Pi does NOT give them access on this one.** If Hunter/Ed/Matt (or
 anyone else) need access here too, they need a *separate* account created
@@ -138,8 +145,63 @@ person. This is a deliberate consequence of "one Pi = one printer = an
 account here means certified on this specific printer" — not a bug, but
 worth knowing about so it doesn't look like a broken sync.
 
-## Not yet started (same as the first Pi)
-- Captive-portal wifi provisioning — not built anywhere yet. If this Pi is
-  going to a site with unknown wifi at deploy time, you'll need to either
-  know the network in advance (set it in step 1) or plug in a keyboard/
-  monitor once to configure it manually until that's built.
+## Redeploying app code changes (not a fresh flash)
+Once a Pi is already provisioned, pushing a code change doesn't need any of
+the above — use the normal deploy path from `CLAUDE.md`:
+```bash
+scp -r printer-upload usb-refresh.sh captain@<hostname>.lan:~/resin-print-portal/
+ssh captain@<hostname>.lan 'cd ~/resin-print-portal/printer-upload && sudo bash deploy.sh'
+```
+
+## Manual fallback (if the automated flash-and-provision path fails)
+Everything below is what `provisioning/provision-sd.sh` +
+`provisioning/provision-boot.sh` do for you. Fall back to it by hand if the
+automated path doesn't come up on a real card — worth filing as a bug
+either way, since the goal is for this section to become unnecessary.
+
+**Flash + first boot**: Raspberry Pi Imager, board = **Raspberry Pi Zero**.
+OS: Raspberry Pi OS Lite (32-bit), Trixie — confirmed this build still
+supports the original Zero W's ARMv6 chip (verified against current
+sources, not just assumption — Debian is expected to drop ARMv6 support
+after Trixie, so this is likely the last generation that supports this
+board). In Imager's Advanced Options (gear icon): set hostname, enable
+SSH, set the `captain` user + password, and preload the site's Wi-Fi
+SSID/password.
+```bash
+ssh captain@<hostname>.lan
+uname -m && cat /etc/os-release   # expect armv6l, Raspbian 13 trixie
+```
+
+**USB gadget** (hardware note: the Zero W's single micro-USB port does
+double duty for power *and* OTG data — confirm on the actual board before
+connecting to a printer):
+
+`/boot/firmware/config.txt`, under `[all]`:
+```
+dtoverlay=dwc2,dr_mode=peripheral
+```
+```bash
+sudo dd if=/dev/zero of=/piusb.bin bs=1M count=8192 status=progress
+sudo mkdosfs /piusb.bin -F 32 -I -n RESINUSB
+sudo modprobe g_mass_storage file=/piusb.bin stall=0 ro=0 removable=1
+```
+Then install `piusb-gadget.service` (repo root) so the gadget reloads on
+every boot, not just this one:
+```bash
+sudo cp piusb-gadget.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now piusb-gadget
+```
+
+**Deploy the Flask portal**:
+```bash
+scp -r printer-upload usb-refresh.sh captain@<hostname>.lan:~/resin-print-portal/
+ssh captain@<hostname>.lan 'cd ~/resin-print-portal/printer-upload && sudo bash deploy.sh'
+```
+(`deploy.sh` installs its own systemd unit now — no separate manual unit-file
+step needed.) `apt install python3-venv` first if the venv step errors —
+it's not preinstalled on Lite images.
+
+## Not yet started
+- Captive-portal wifi provisioning — not built anywhere yet. Wi-Fi still
+  has to be known at flash time (baked in by `provision-sd.sh`) or you're
+  plugging in a keyboard/monitor once to configure it manually.

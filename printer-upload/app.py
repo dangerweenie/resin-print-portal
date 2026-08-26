@@ -39,17 +39,31 @@ else:
     API_KEY = secrets.token_hex(24)
     open(_akf,'w').write(API_KEY)
 
-# First-run only: generate a random admin password rather than shipping a
-# fixed one in source. Written once to .initial_admin_password and printed
-# to the log — read it from either place, log in, then change it via
-# Settings (and delete that file). Has no effect once settings.json exists,
-# since the real password hash lives there from then on.
+# First-run only. If provision-sd.sh staged the captain system account's
+# password (it knows it — it's the one that set it via cloud-init), use that
+# so the admin login matches the Pi's own login rather than an unrelated
+# random one. Falls back to generating a random password when there's no
+# seed (a manual/redeploy run outside the automated provisioning path).
+# Written once to .initial_admin_password and printed to the log — read it
+# from either place, log in, then change it via Settings (and delete that
+# file). Has no effect once settings.json exists, since the real password
+# hash lives there from then on.
 _apf = f'{BASE}/.initial_admin_password'
+_seedf = f'{BASE}/.admin_password_seed'
 if not os.path.exists(SETTINGS):
-    _initial_admin_password = secrets.token_urlsafe(9)
-    open(_apf,'w').write(_initial_admin_password + '\n')
-    print(f"[printer-upload] First run — generated admin password: {_initial_admin_password}\n"
-          f"    (also saved to {_apf}) — log in, change it via Settings, then delete that file.")
+    if os.path.exists(_seedf):
+        _initial_admin_password = open(_seedf).read().strip()
+        os.remove(_seedf)
+        open(_apf,'w').write(_initial_admin_password + '\n')
+        print("[printer-upload] First run — admin password set to match the "
+              "captain system account's password. Log in with that, change "
+              "it via Settings, then delete "
+              f"{_apf}.")
+    else:
+        _initial_admin_password = secrets.token_urlsafe(9)
+        open(_apf,'w').write(_initial_admin_password + '\n')
+        print(f"[printer-upload] First run — generated admin password: {_initial_admin_password}\n"
+              f"    (also saved to {_apf}) — log in, change it via Settings, then delete that file.")
 else:
     _initial_admin_password = secrets.token_urlsafe(9)  # unused placeholder; real hash already in settings.json
 

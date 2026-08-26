@@ -23,12 +23,24 @@ printer-upload/     the Flask app — this is almost certainly what you want
                           variant's metadata block
   templates/*.html
   tests/               off-hardware pytest suite — see "Local dev" below
-  deploy.sh           copies everything into place on the Pi and restarts
-                       the systemd service
+  deploy.sh           copies everything into place on the Pi, installs/
+                       enables the systemd unit below, and restarts it
+  printer-upload.service   the systemd unit deploy.sh installs
   requirements.txt, requirements-dev.txt   pinned dependencies
 usb-refresh.sh        syncs the current print job onto the printer's USB
                        gadget image — lives one level up from the Flask
                        app since it's more device-level than app-level
+piusb-gadget.service  systemd unit that (re)loads the USB gadget on every
+                       boot, not just the first
+provisioning/         unattended flash-and-boot setup for a brand-new Pi —
+                       see docs/second-pi-setup.md for how it's used
+  provision-sd.sh       run on your dev machine — can flash+partition a
+                         blank SD card itself (--device mode) or just
+                         provision an already-flashed one (--boot mode)
+  firstrun.sh           stage 1: runs once on the Pi's first boot, before
+                         networking is up (hostname/user/wifi-file/gadget)
+  provision-stage2.sh   stage 2: runs once on the following boot, once
+                         real network is up (installs the Flask app)
 hw-tests/            on-Pi hardware validation script — run by hand on
                        target hardware, see hw-tests/README.md
 docs/                project narrative and setup runbooks
@@ -114,8 +126,11 @@ devices, never in this repo.
 
 ## Deploying
 
-Once tests pass locally, push the app onto an already-set-up Pi (see
-`docs/second-pi-setup.md` to stand up a brand-new one first):
+Once tests pass locally, push the app onto an already-set-up Pi (for a
+brand-new Pi, `docs/second-pi-setup.md` + `provisioning/provision-sd.sh`
+now handle first-time setup — flashing, hostname/wifi/SSH, the USB gadget,
+and the first app deploy — unattended; the manual steps below are for
+pushing a code change to a Pi that's already provisioned):
 ```bash
 scp -r printer-upload usb-refresh.sh captain@<pi-hostname>.lan:~/resin-print-portal/
 ssh captain@<pi-hostname>.lan 'cd ~/resin-print-portal/printer-upload && sudo bash deploy.sh'
