@@ -3,9 +3,10 @@
 Layer 4 of `hw-tests/` (see `README.md` for the full picture). Everything
 here needs either eyes on a printer's screen or a physical action (power
 cycle, cable pull) that an SSH session can't script on itself. Run through
-this on `resin1` after any change to `usb-refresh.sh`, the gadget config, or
-the print-job lifecycle in `app.py` — and periodically regardless, since
-firmware/behavior can drift per printer without any code change here.
+this on `resin1` after any change to `usb-refresh.sh`, the gadget config, the
+pi-agent, or the print-job lifecycle in the central portal — and periodically
+regardless, since firmware/behavior can drift per printer without any code
+change here.
 
 Working style note (from `CLAUDE.md`): you're watching the printer screen,
 Claude Code is driving the Pi — one step at a time, confirm before the next.
@@ -45,7 +46,7 @@ verification:
 ssh captain@resin1.lan
 sudo reboot
 # wait ~30-60s
-ssh captain@resin1.lan 'systemctl is-active piusb-gadget printer-upload; lsmod | grep g_mass_storage'
+ssh captain@resin1.lan 'systemctl is-active piusb-gadget resin-pi-agent; lsmod | grep g_mass_storage'
 curl -s -o /dev/null -w '%{http_code}\n' http://resin1.lan/
 ```
 Expect: both units `active`, `g_mass_storage` loaded, HTTP `200`/`302` —
@@ -66,7 +67,7 @@ deliberately rather than assuming it's fine:
    few seconds, turn it back on.
    ```bash
    ssh captain@resin1.lan 'sudo fsck.fat -n /dev/<piusb-partition>'  # -n = check only, don't fix
-   ssh captain@resin1.lan 'systemctl is-active piusb-gadget printer-upload'
+   ssh captain@resin1.lan 'systemctl is-active piusb-gadget resin-pi-agent'
    ```
    Expect: `fsck.fat` reports clean (or only trivial dirty-bit, per
    `CLAUDE.md`'s known-harmless note), both services active, drive
@@ -100,7 +101,7 @@ Upload files with: spaces, unicode characters, a very long name (>50 chars),
 and a double extension (`model.v2.goo`). Start a print with each and check
 how the filename actually renders on each printer's on-screen file list —
 `usb-refresh.sh`'s own revision history already notes real per-model
-differences in how folder/attribution info survives (flattened+prefixed was
-adopted specifically because of this). `secure_filename()` plus FAT32's
-lossy long-filename handling is a second place things can mangle a name
-that a byte-level content check can't see.
+differences in how folder/attribution info survives. The agent's
+`sanitizeFilename` (in `internal/server/api.go`, applied again on the Pi
+side) plus FAT32's lossy long-filename handling is a second place things
+can mangle a name that a byte-level content check can't see.

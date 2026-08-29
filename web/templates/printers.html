@@ -1,0 +1,83 @@
+{{define "title"}}Printers — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Printers</h1>
+
+{{if .NewKey}}
+<div class="flash ok">
+  New API key for the Pi (shown once — copy it now):<br>
+  <code>{{.NewKey}}</code>
+</div>
+{{end}}
+
+{{if .Pending}}
+<h2>Pending approval</h2>
+<p class="muted">A Pi self-registered with the fleet enrollment token. Approve it
+once and it's live — nothing to configure on the Pi.</p>
+<table>
+  <thead><tr><th>Name</th><th>Slug</th><th>Device</th><th>Enrolled</th><th>Last seen</th><th></th></tr></thead>
+  <tbody>
+  {{range .Pending}}
+    <tr>
+      <td>{{.DisplayName}}</td>
+      <td><code>{{.Slug}}</code></td>
+      <td><code>{{if .DeviceID}}{{.DeviceID}}{{else}}—{{end}}</code></td>
+      <td>{{tsp .EnrolledAt}}</td>
+      <td>{{.LastSeen}}</td>
+      <td>
+        <form class="inline" method="post" action="/admin/printers/{{.ID}}/approve">
+          <button type="submit">Approve</button>
+        </form>
+        <form class="inline" method="post" action="/admin/printers/{{.ID}}/delete"
+              onsubmit="return confirm('Reject and delete this enrollment?')">
+          <button class="secondary" type="submit">Reject</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
+<h2>Active printers</h2>
+<table>
+  <thead><tr><th>Slug</th><th>Name</th><th>Model</th><th>Extensions</th><th>Last seen</th><th>Slack</th><th></th></tr></thead>
+  <tbody>
+  {{range .Active}}
+    <tr>
+      <td><code>{{.Slug}}</code></td>
+      <td>{{.DisplayName}}</td>
+      <td>{{if .Model}}{{.Model}}{{else}}<span class="muted">—</span>{{end}}</td>
+      <td>{{range .AllowedExtensions}}<code>{{.}}</code> {{else}}<span class="muted">any</span>{{end}}</td>
+      <td>{{.LastSeen}}</td>
+      <td>{{if .SlackWebhookURL}}on{{else}}<span class="muted">off</span>{{end}}</td>
+      <td>
+        <a href="/admin/printers/{{.ID}}">Edit</a>
+        <form class="inline" method="post" action="/admin/printers/{{.ID}}/rotate-key"
+              onsubmit="return confirm('Rotate the API key? A hand-configured Pi must be updated; a self-enrolled Pi re-enrolls on its own.')">
+          <button class="secondary" type="submit">Rotate key</button>
+        </form>
+        <form class="inline" method="post" action="/admin/printers/{{.ID}}/disable"
+              onsubmit="return confirm('Disable this printer? Uploads stop until it is approved again.')">
+          <button class="secondary" type="submit">Disable</button>
+        </form>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7" class="muted">No active printers yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Add a printer by hand</h2>
+<p class="muted">Only needed for something that isn't a self-enrolling Pi (a test
+rig, a manual setup). Real Pis register themselves.</p>
+<form method="post" action="/admin/printers">
+  <p><label>Slug (used in the Pi config and URLs)<br><input type="text" name="slug" placeholder="resin"></label></p>
+  <p><label>Display name<br><input type="text" name="display_name" placeholder="Resin Printer"></label></p>
+  <p><label>Model (for the sliced-for cross-check)<br><input type="text" name="model" placeholder="Anycubic Photon Mono M7 Pro"></label></p>
+  <p><label>Allowed extensions (comma separated, blank = any)<br><input type="text" name="allowed_extensions" placeholder=".pwsz, .pm7, .pm7m"></label></p>
+  <p><label>Safety checklist (one item per line)<br><textarea name="safety_checklist"></textarea></label></p>
+  <p><label>Slack webhook URL (optional)<br><input type="text" name="slack_webhook_url"></label></p>
+  <p><button type="submit">Create printer</button></p>
+</form>
+{{end}}

@@ -1,0 +1,34 @@
+resin-portal {{ .Chart.AppVersion }} installed as {{ .Release.Name }}.
+
+1. The pre/post hooks ran `portal migrate up`. Check it:
+     kubectl logs -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=migrate
+
+2. The roster-sync worker pulls TinkerAccess every {{ .Values.sync.interval }}:
+     kubectl logs -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=worker -f
+   If it logs a 404 for get_users, the Leptos hash changed — recover the path per
+   docs/GET_MEMBERS_ENDPOINT.md and set tinkerAccess.getUsersPath.
+
+{{- if not .Values.ingress.enabled }}
+
+3. No Ingress. Reach the admin UI with:
+     kubectl port-forward svc/{{ include "resin-portal.fullname" . }} 8080:{{ .Values.service.port }}
+   then open http://localhost:8080/admin/login
+{{- else }}
+
+3. Admin UI: https://{{ .Values.ingress.host }}/admin/login
+{{- end }}
+   Log in as {{ .Values.app.adminUsername }} with the password from app.adminPassword.
+
+4. Pi self-enrollment is ON. {{ if .Values.app.enrollToken }}It requires the enrollment token (also set it in provisioning/fleet.env).{{ else }}It is OPEN — anything that can reach POST /api/v1/enroll can register a *pending* printer; approving it under Printers -> Pending is the gate. Set app.enrollToken if the portal is public.{{ end }}
+   Flash cards with provisioning/, then approve each Pi once. Nothing per Pi.
+
+{{- if and (not .Values.existingSecret) (not .Values.app.sessionSecret) }}
+
+WARNING: app.sessionSecret was auto-generated into the Secret. It will be
+REGENERATED on the next `helm upgrade`, logging every admin out. Set a fixed
+app.sessionSecret (32+ chars) for production.
+{{- end }}
+{{- if and .Values.postgresql.enabled (eq .Values.postgresql.auth.password "change-me-in-values") }}
+
+WARNING: postgresql.auth.password is still the default. Set it in your values.
+{{- end }}

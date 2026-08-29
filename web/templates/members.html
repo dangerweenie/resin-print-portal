@@ -1,0 +1,36 @@
+{{define "title"}}Members — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Members</h1>
+<p class="muted">Roster mirrored from TinkerAccess. Link each person's Tinkermill Slack
+display name so the Pi upload page can identify them. A unique exact full-name match
+is used as a fallback when no link exists.</p>
+<table>
+  <thead><tr><th>Name</th><th>Status</th><th>Code</th><th>Slack names</th><th>Add link</th></tr></thead>
+  <tbody>
+  {{range .Members}}
+    <tr>
+      <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">(no name)</span>{{end}}
+        <div class="muted">id {{.ID}}{{if not .Active}} · inactive{{end}}</div></td>
+      <td><span class="pill {{if eq .Status "A"}}a{{else if eq .Status "S"}}s{{else}}i{{end}}">{{.Status}}</span></td>
+      <td>{{.Code}}</td>
+      <td>
+        {{range .SlackNames}}
+          <form class="inline" method="post" action="/admin/members/slack-unlink">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <code>{{.SlackNameNormalized}}</code>
+            <button class="secondary" type="submit" title="remove">×</button>
+          </form><br>
+        {{else}}<span class="muted">none</span>{{end}}
+      </td>
+      <td>
+        <form method="post" action="/admin/members/slack-link">
+          <input type="hidden" name="member_id" value="{{.ID}}">
+          <input type="text" name="slack_name" placeholder="slack display name" style="max-width:12rem">
+          <button type="submit">Link</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

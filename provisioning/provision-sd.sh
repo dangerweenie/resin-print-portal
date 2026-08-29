@@ -14,12 +14,17 @@
 # away — hostname/user/SSH/Wi-Fi come up via cloud-init's native NoCloud
 # datasource (user-data/network-config, written below), then cloud-init's
 # own `runcmd` stage (which only runs once real networking is up) triggers
-# provision-boot.sh for the USB gadget + printer-upload app deploy. One
+# provision-boot.sh for the USB gadget + pi-agent install. One
 # automatic reboot at the end (see provision-boot.sh) to load the new
 # config.txt dtoverlay.
 #
 # NOT YET HARDWARE-VERIFIED end-to-end — do one test card before trusting
 # this for the whole fleet. See docs/second-pi-setup.md.
+#
+# The portal URL is the same on every card. Put it in provisioning/fleet.env
+# once (see fleet.env.example) — then you only pass the per-card
+# hostname/password/wifi. An enrollment token is optional (fleet.env or
+# --enroll-token) and only needed if the portal requires one.
 #
 # Usage (device mode — flashes AND provisions):
 #   sudo ./provision-sd.sh --device /dev/sdb --image ~/Downloads/raspios-lite.img.xz \
@@ -32,9 +37,12 @@
 #     --wifi-ssid 'SiteWifi' --wifi-password 'wifi-password'
 #
 # Optional: --user (default captain), --wifi-country (default US),
+# --central-url / --enroll-token (override provisioning/fleet.env),
 # --repo-root (default: parent directory of this script), --yes (device
-# mode only — skip the "type the device path to confirm" prompt; for
-# scripted use, NOT recommended when running this by hand).
+# mode only — skip the "type the device path to confirm" prompt).
+#
+# After the Pi boots it self-registers with the portal; an admin approves it
+# once under Printers → Pending. The resin-room volunteer does nothing.
 set -euo pipefail
 
 USER_NAME=captain
@@ -48,6 +56,15 @@ HOSTNAME=""
 PASSWORD=""
 WIFI_SSID=""
 WIFI_PASSWORD=""
+CENTRAL_URL=""
+ENROLL_TOKEN=""
+
+# Fleet-wide portal settings live in provisioning/fleet.env (gitignored) so you
+# set them once, not per card. --central-url / --enroll-token override.
+if [ -f "$REPO_ROOT/provisioning/fleet.env" ]; then
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/provisioning/fleet.env"
+fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -61,6 +78,8 @@ while [ $# -gt 0 ]; do
         --wifi-ssid) WIFI_SSID="$2"; shift 2 ;;
         --wifi-password) WIFI_PASSWORD="$2"; shift 2 ;;
         --wifi-country) WIFI_COUNTRY="$2"; shift 2 ;;
+        --central-url) CENTRAL_URL="$2"; shift 2 ;;
+        --enroll-token) ENROLL_TOKEN="$2"; shift 2 ;;
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -72,6 +91,12 @@ for required in HOSTNAME PASSWORD WIFI_SSID WIFI_PASSWORD; do
         exit 1
     fi
 done
+if [ -z "$CENTRAL_URL" ]; then
+    echo "Missing --central-url (or set CENTRAL_URL in provisioning/fleet.env)." >&2
+    echo "It is the same on every card; the Pi self-registers with the portal on first boot." >&2
+    exit 1
+fi
+# ENROLL_TOKEN is optional — only set it if the portal requires one.
 
 if [ -n "$BOOT" ] && [ -n "$DEVICE" ]; then
     echo "ERROR: pass either --boot or --device, not both." >&2
@@ -264,22 +289,38 @@ echo "--- copying provision-boot.sh (runs once via cloud-init's runcmd," \
      "after real networking is up) ---"
 cp "$REPO_ROOT/provisioning/provision-boot.sh" "$BOOT/provision-boot.sh"
 
-echo "--- staging app payload ---"
+echo "--- staging pi-agent payload ---"
+# The Pi no longer runs a local web app — it runs the thin Go `pi-agent`,
+# which talks to the central portal. Cross-compile it first on this machine:
+#   make pi-agent          # -> bin/pi-agent-armv6 (static, armv6)
+AGENT_BIN="$REPO_ROOT/bin/pi-agent-armv6"
+if [ ! -f "$AGENT_BIN" ]; then
+    echo "ERROR: $AGENT_BIN not found — run 'make pi-agent' first." >&2
+    exit 1
+fi
 rm -rf "$BOOT/payload"
-mkdir -p "$BOOT/payload/printer-upload"
-cp "$REPO_ROOT"/printer-upload/*.py "$REPO_ROOT"/printer-upload/*.txt \
-   "$REPO_ROOT"/printer-upload/deploy.sh "$REPO_ROOT"/printer-upload/printer-upload.service \
-   "$BOOT/payload/printer-upload/"
-cp -r "$REPO_ROOT/printer-upload/templates" "$BOOT/payload/printer-upload/"
-cp "$REPO_ROOT/usb-refresh.sh" "$BOOT/payload/"
-cp "$REPO_ROOT/piusb-gadget.service" "$BOOT/payload/"
+mkdir -p "$BOOT/payload/agent"
+cp "$AGENT_BIN"                              "$BOOT/payload/agent/pi-agent-armv6"
+cp "$REPO_ROOT/usb-refresh.sh"              "$BOOT/payload/agent/usb-refresh.sh"
+cp "$REPO_ROOT/pi/resin-pi-agent.service"   "$BOOT/payload/agent/resin-pi-agent.service"
+cp "$REPO_ROOT/pi/install.sh"               "$BOOT/payload/agent/install.sh"
+cp "$REPO_ROOT/pi/config.example.env"       "$BOOT/payload/agent/config.example.env"
+cp "$REPO_ROOT/piusb-gadget.service"        "$BOOT/payload/"
 
-# So the app's first-run admin login matches the captain system account
-# instead of an unrelated random password — see app.py/deploy.sh. FAT32 has
-# no real permission bits, so this is no more exposed here than the wifi
-# password already staged in network-config above; deploy.sh tightens it to
-# 600 on the rootfs side, and app.py deletes it once consumed.
-printf '%s' "$PASSWORD" > "$BOOT/payload/printer-upload/.admin_password_seed"
+# Stage a FILLED env with the fleet constant(s). Everything printer-specific
+# (slug, API key) the Pi gets by self-registering with the portal on first
+# boot — nobody edits anything per card. install.sh installs this verbatim.
+cat > "$BOOT/payload/agent/resin-pi-agent.env" <<EOF
+CENTRAL_BASE_URL=$CENTRAL_URL
+ENROLL_TOKEN=$ENROLL_TOKEN
+GADGET_IMAGE=/piusb.bin
+LISTEN_ADDR=:80
+USB_REFRESH_SCRIPT=/usr/local/bin/usb-refresh.sh
+CREDS_PATH=/var/lib/resin-pi-agent/creds.env
+LOG_LEVEL=info
+EOF
+chmod 600 "$BOOT/payload/agent/resin-pi-agent.env"
+[ -n "$ENROLL_TOKEN" ] || echo "  note: no enroll token — enrollment is open, admin approval is the gate"
 
 sync
 
@@ -296,4 +337,4 @@ echo "itself at the end (needed for the new config.txt dtoverlay to take"
 echo "effect). Then:"
 echo "  ssh $USER_NAME@$HOSTNAME.lan"
 echo "  ssh $USER_NAME@$HOSTNAME.lan 'cat /var/log/provision-boot.log'"
-echo "to confirm the app deploy finished."
+echo "to confirm the pi-agent install finished."

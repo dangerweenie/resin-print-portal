@@ -1,0 +1,11 @@
+{{define "title"}}Settings — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Settings</h1>
+<h2>Change your password</h2>
+<p class="muted">Signed in as <code>{{.User}}</code>.</p>
+<form method="post" action="/admin/settings/password">
+  <p><label>New password<br><input type="password" name="new_password"></label></p>
+  <p><label>Confirm<br><input type="password" name="confirm_password"></label></p>
+  <p><button type="submit">Update password</button></p>
+</form>
+{{end}}

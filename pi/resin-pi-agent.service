@@ -1,0 +1,25 @@
+[Unit]
+Description=Resin print portal — on-Pi upload agent
+After=network-online.target
+Wants=network-online.target
+# The USB gadget must be loadable; usb-refresh.sh (re)loads g_mass_storage.
+After=piusb-gadget.service
+
+[Service]
+Type=simple
+# Root is required: the agent shells out to usb-refresh.sh, which runs
+# modprobe / losetup / mount.
+User=root
+EnvironmentFile=/etc/resin-pi-agent.env
+# Creates /var/lib/resin-pi-agent (0700, root) for the persisted enrollment
+# credentials and device id.
+StateDirectory=resin-pi-agent
+ExecStart=/usr/local/bin/pi-agent
+Restart=on-failure
+RestartSec=3
+# Light hardening — still needs broad access for the gadget plumbing.
+NoNewPrivileges=false
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,44 @@
+{{define "title"}}Certifications — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Certifications</h1>
+<form method="get" action="/admin/certifications">
+  <label>Printer
+    <select name="printer" onchange="this.form.submit()">
+      {{range .Printers}}
+        <option value="{{.Slug}}" {{if eq .Slug $.Selected.Slug}}selected{{end}}>{{.DisplayName}} ({{.Slug}})</option>
+      {{end}}
+    </select>
+  </label>
+</form>
+
+{{if .Selected.Slug}}
+<table>
+  <thead><tr><th>Member</th><th>Membership</th><th>Certified</th><th></th></tr></thead>
+  <tbody>
+  {{range .Rows}}
+    <tr>
+      <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">(no name) id {{.ID}}</span>{{end}}</td>
+      <td><span class="pill {{if .Active}}a{{else}}i{{end}}">{{if .Active}}active{{else}}inactive{{end}}</span></td>
+      <td>{{if .Certified}}yes <span class="muted">by {{.CertifiedBy}}</span>{{else}}<span class="muted">no</span>{{end}}</td>
+      <td>
+        <form class="inline" method="post" action="/admin/certifications">
+          <input type="hidden" name="printer_id" value="{{$.Selected.ID}}">
+          <input type="hidden" name="printer_slug" value="{{$.Selected.Slug}}">
+          <input type="hidden" name="member_id" value="{{.ID}}">
+          {{if .Certified}}
+            <input type="hidden" name="action" value="revoke">
+            <button class="secondary" type="submit">Revoke</button>
+          {{else}}
+            <input type="hidden" name="action" value="certify">
+            <button type="submit">Certify</button>
+          {{end}}
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">Create a printer first.</p>
+{{end}}
+{{end}}

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Config.DisplayName}}{{.Config.DisplayName}}{{else}}Resin Printer{{end}} — upload</title>
+<style>
+  :root {
+    --bg:#16181c; --surface:#1c1f24; --surface-2:#23272e; --border:#2c313a;
+    --text:#c2c8d0; --text-dim:#9aa1ac; --muted:#767d88; --faint:#565d68;
+    --amber:#d98a5c; --amber-ink:#1a1208;
+    --err:#d68a8a; --err-bg:#241b1b; --err-border:#3a2a2a;
+    --ok:#8cc79a;  --ok-bg:#1a241d;  --ok-border:#2b3a30;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "JetBrains Mono", "SF Mono", "DejaVu Sans Mono", "Courier New", ui-monospace, monospace;
+    font-size: 14px; line-height: 1.6; color: var(--text); background: var(--bg);
+    max-width: 40rem; margin: 0 auto; padding: 2.5rem 1.25rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 {
+    font-size: 1rem; letter-spacing: .16em; text-transform: uppercase;
+    font-weight: 700; margin: 0 0 .3rem;
+  }
+  .tag { font-size: .66rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .flash { padding: .7rem .9rem; border-radius: 3px; margin: 1.25rem 0; font-size: .84rem; border: 1px solid transparent; }
+  .flash.ok  { background: var(--ok-bg);  color: var(--ok);  border-color: var(--ok-border); }
+  .flash.err { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
+  label {
+    display: block; margin: 1rem 0 .3rem;
+    font-size: .66rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+  }
+  label .exts { color: var(--faint); text-transform: none; letter-spacing: 0; }
+  input[type=text], input[type=file] {
+    width: 100%; background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--text); padding: .55rem .65rem; font: inherit; font-size: .86rem;
+    border-radius: 3px; outline: none; transition: border-color .15s ease;
+  }
+  input[type=text]:focus, input[type=file]:focus { border-color: var(--amber); }
+  input[type=file] { padding: .45rem; color: var(--text-dim); }
+  input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; margin-right: .5rem; vertical-align: -2px; }
+  .check { margin: .45rem 0; }
+  .check label {
+    display: inline; margin: 0; text-transform: none; letter-spacing: 0;
+    font-size: .84rem; color: var(--text-dim); cursor: pointer;
+  }
+  button {
+    margin-top: 1.5rem; padding: .65rem 1.4rem; font: inherit;
+    font-size: .74rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+    border: 1px solid var(--amber); background: var(--amber); color: var(--amber-ink);
+    border-radius: 3px; cursor: pointer; transition: opacity .15s ease;
+  }
+  button:hover { opacity: .88; }
+  .job {
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 2px solid var(--amber); border-radius: 3px;
+    padding: 1rem 1.15rem; margin: 1.25rem 0;
+  }
+  .job .jb-title { font-size: .66rem; letter-spacing: .12em; text-transform: uppercase; color: var(--amber); margin-bottom: .35rem; }
+  .job .jb-file { color: var(--text); }
+  .job button { background: transparent; color: var(--muted); border-color: var(--border); margin-top: 1rem; }
+  .job button:hover { color: var(--amber); border-color: var(--amber); opacity: 1; }
+  .notice {
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 2px solid var(--amber); border-radius: 3px;
+    padding: 1.1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .notice .nt-title { font-size: .66rem; letter-spacing: .12em; text-transform: uppercase; color: var(--amber); margin-bottom: .4rem; }
+  .muted { color: var(--muted); font-size: .82rem; }
+  hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0 1.25rem; }
+  ::selection { background: rgba(217,138,92,.28); }
+</style>
+</head>
+<body>
+<h1>{{if .Config.DisplayName}}{{.Config.DisplayName}}{{else}}Resin Printer{{end}}</h1>
+<div class="tag">Resin Print Portal · upload</div>
+
+{{if .Message}}<div class="flash ok">{{.Message}}</div>{{end}}
+{{if .Error}}<div class="flash err">{{.Error}}</div>{{end}}
+
+{{if .CurrentJob}}
+<div class="job">
+  <div class="jb-title">Printing now</div>
+  <div class="jb-file">{{.CurrentJob.Filename}}</div>
+  <div class="muted">
+    {{if .CurrentJob.SlackName}}{{.CurrentJob.SlackName}}{{end}}
+    {{if .CurrentJob.Remaining}} · ~{{.CurrentJob.Remaining}} left{{end}}
+  </div>
+  <form method="post" action="/finish" onsubmit="return confirm('Mark this print finished and clear the drive?')">
+    <input type="hidden" name="job_id" value="{{.CurrentJob.ID}}">
+    <button type="submit">I've removed my print — mark finished</button>
+  </form>
+</div>
+{{end}}
+
+{{if and .Config.Slug (not .Config.Approved)}}
+<div class="notice">
+  <div class="nt-title">Waiting for approval</div>
+  This printer registered itself with the portal and is waiting for a makerspace
+  admin to approve it. Nothing to do here — check back shortly, or give an admin
+  a nudge.
+</div>
+{{else}}
+<form method="post" action="/submit" enctype="multipart/form-data">
+  <label for="slack_name">Your Tinkermill Slack name</label>
+  <input type="text" id="slack_name" name="slack_name" autocomplete="off" placeholder="e.g. jane.doe" required>
+
+  <label for="file">Sliced file{{if .Config.AllowedExtensions}}
+    <span class="exts">({{range .Config.AllowedExtensions}}{{.}} {{end}})</span>{{end}}</label>
+  <input type="file" id="file" name="file" required>
+
+  {{if .Config.SafetyChecklist}}
+  <label>Safety checklist</label>
+  {{range $i, $item := .Config.SafetyChecklist}}
+    <div class="check"><label><input type="checkbox" name="check_{{$i}}" value="1" required>{{$item}}</label></div>
+  {{end}}
+  {{end}}
+
+  <button type="submit">Send to printer</button>
+</form>
+
+<hr>
+<p class="muted">The portal checks your membership and resin-printer certification before anything reaches the printer.</p>
+{{end}}
+</body>
+</html>

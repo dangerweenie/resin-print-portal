@@ -8,9 +8,12 @@
 # need mkdosfs/parted/losetup to build -- those run HERE, on this machine,
 # and only the resulting bytes get shipped to the Pi via scp. The Pi itself
 # is only ever asked to do things usb-refresh.sh already needs in
-# production: losetup/mount/umount/modprobe (via sudo), plus a throwaway
-# sqlite3 DB via the Pi's system python3 (sqlite3 is stdlib -- no package
-# install). See hw-tests/lib/remote.sh for the full rationale.
+# production: losetup/mount/umount/modprobe (via sudo). See
+# hw-tests/lib/remote.sh for the full rationale.
+#
+# usb-refresh.sh's contract is now `usb-refresh.sh <file>` (place exactly
+# that file on the gadget) or `usb-refresh.sh --clear` (empty it) -- it no
+# longer reads a local SQLite DB. These sub-tests just pass a file path.
 #
 # What it checks, and why: usb-refresh.sh previously assumed /piusb.bin is
 # always MBR-partitioned. Against a bare-FAT32 image (the layout
@@ -18,11 +21,10 @@
 # `set -e` would kill the script AFTER it had already unloaded the gadget --
 # permanently orphaning the printer's USB drive until someone noticed by
 # hand. The fix (partition-node detection + an EXIT trap that always
-# reloads the gadget) is covered off-hardware for the mount/detection logic
-# itself in printer-upload/tests/test_usb_refresh_mount_logic.py, but that
-# can't exercise the real g_mass_storage module. This script re-validates
-# the same two layouts PLUS the actual failure/recovery path, against the
-# real gadget driver.
+# reloads the gadget) can't be exercised off-hardware because it needs the
+# real g_mass_storage module. This script re-validates the two image
+# layouts (bare FAT32, MBR-partitioned) PLUS the failure/recovery path and
+# the --clear contract, against the real gadget driver.
 #
 # WARNING: running this unloads/reloads the g_mass_storage USB gadget on
 # the target Pi several times over the run -- whatever's plugged into that
@@ -36,14 +38,13 @@
 #
 # Env overrides (all optional):
 #   SCRIPT_UNDER_TEST   local path to a working-tree usb-refresh.sh to test
-#                       before running deploy.sh (gets copied up to scratch
-#                       and run from there). Default: the already-deployed
-#                       /usr/local/bin/usb-refresh.sh on the target Pi.
+#                       instead of the one already installed on the Pi
+#                       (gets copied up to scratch and run from there).
+#                       Default: /usr/local/bin/usb-refresh.sh on the Pi.
 #   SCRATCH_DIR         remote scratch dir (default:
-#                       /opt/printer-upload/hw-test-scratch -- real disk,
-#                       not /tmp, which CLAUDE.md documents as a 213MB
-#                       tmpfs that has silently truncated large writes
-#                       before).
+#                       /home/<user>/hw-test-scratch -- real disk, not
+#                       /tmp, which CLAUDE.md documents as a 213MB tmpfs
+#                       that has silently truncated large writes before).
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,7 +62,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-SCRATCH_DIR=${SCRATCH_DIR:-/opt/printer-upload/hw-test-scratch}
+SCRATCH_DIR=${SCRATCH_DIR:-/home/$SSH_USER/hw-test-scratch}
 VMOUNT="$SCRATCH_DIR/verify-mnt"
 LOCAL_SCRATCH=$(mktemp -d)
 
@@ -117,16 +118,6 @@ fi
 
 # --- Helpers ---------------------------------------------------------------
 
-seed_db_row() {  # $1=remote subdir under SCRATCH_DIR (e.g. a-base) $2=folder $3=filename
-    remote "mkdir -p $SCRATCH_DIR/$1/files/$2 && python3 -" <<PYEOF
-import sqlite3
-c = sqlite3.connect('$SCRATCH_DIR/$1/uploads.db')
-c.execute('CREATE TABLE IF NOT EXISTS print_jobs(id INTEGER PRIMARY KEY, folder TEXT, filename TEXT, status TEXT)')
-c.execute("INSERT INTO print_jobs VALUES (1, '$2', '$3', 'printing')")
-c.commit(); c.close()
-PYEOF
-}
-
 # Mounts $1 (already loaded into g_mass_storage by usb-refresh.sh's own
 # trap) via an independent loop device to verify contents, then releases
 # that loop device -- mirrors the exact by-hand sequence CLAUDE.md
@@ -155,8 +146,8 @@ verify_scratch_image() {  # $1=remote image path $2=partitioned(0/1) $3=fname $4
     [ "$ok" = "1" ]
 }
 
-run_usb_refresh() {  # $1=image $2=base $3=mountpoint
-    remote_sudo "env PIUSB_IMAGE=$1 PRINTER_UPLOAD_BASE=$2 USB_REFRESH_MOUNT_POINT=$3 bash $SCRIPT_UNDER_TEST_REMOTE"
+run_usb_refresh() {  # $1=image $2=file-to-place (or --clear) $3=mountpoint
+    remote_sudo "env PIUSB_IMAGE=$1 USB_REFRESH_MOUNT_POINT=$3 bash $SCRIPT_UNDER_TEST_REMOTE $2"
 }
 
 # --- Sub-test A: bare FAT32 (no partition table) ---------------------------
@@ -166,12 +157,10 @@ run_subtest_a() {
     dd if=/dev/zero of="$local_img" bs=1M count=64 status=none
     mkdosfs -F 32 "$local_img" >/dev/null
 
-    remote_put "$local_src" "$SCRATCH_DIR/a-model.goo" >/dev/null
+    remote_put "$local_src" "$SCRATCH_DIR/model.goo" >/dev/null
     remote_put "$local_img" "$SCRATCH_DIR/a-bare.bin" >/dev/null
-    remote "mkdir -p $SCRATCH_DIR/a-base/files/testuser && cp $SCRATCH_DIR/a-model.goo $SCRATCH_DIR/a-base/files/testuser/model.goo"
-    seed_db_row a-base testuser model.goo
 
-    if run_usb_refresh "$SCRATCH_DIR/a-bare.bin" "$SCRATCH_DIR/a-base" "$SCRATCH_DIR/a-mnt" >/dev/null; then
+    if run_usb_refresh "$SCRATCH_DIR/a-bare.bin" "$SCRATCH_DIR/model.goo" "$SCRATCH_DIR/a-mnt" >/dev/null; then
         if verify_scratch_image "$SCRATCH_DIR/a-bare.bin" 0 model.goo "$local_src"; then
             pass "A: bare FAT32 image -- file landed correctly"
         else
@@ -194,13 +183,11 @@ run_subtest_b() {
     sudo losetup -d "$loop"
     sudo chmod 644 "$local_img"
 
-    remote_put "$local_src" "$SCRATCH_DIR/b-model.goo" >/dev/null
+    remote_put "$local_src" "$SCRATCH_DIR/model-b.goo" >/dev/null
     remote_put "$local_img" "$SCRATCH_DIR/b-mbr.bin" >/dev/null
-    remote "mkdir -p $SCRATCH_DIR/b-base/files/testuser && cp $SCRATCH_DIR/b-model.goo $SCRATCH_DIR/b-base/files/testuser/model.goo"
-    seed_db_row b-base testuser model.goo
 
-    if run_usb_refresh "$SCRATCH_DIR/b-mbr.bin" "$SCRATCH_DIR/b-base" "$SCRATCH_DIR/b-mnt" >/dev/null; then
-        if verify_scratch_image "$SCRATCH_DIR/b-mbr.bin" 1 model.goo "$local_src"; then
+    if run_usb_refresh "$SCRATCH_DIR/b-mbr.bin" "$SCRATCH_DIR/model-b.goo" "$SCRATCH_DIR/b-mnt" >/dev/null; then
+        if verify_scratch_image "$SCRATCH_DIR/b-mbr.bin" 1 model-b.goo "$local_src"; then
             pass "B: MBR-partitioned image -- file landed correctly"
         else
             fail "B: MBR-partitioned image -- file missing or content mismatch after refresh"
@@ -216,16 +203,14 @@ run_subtest_b() {
 # still loaded afterward. Built with `dd` directly on the Pi -- no fixture
 # transfer needed, `dd` is core coreutils either way.
 run_subtest_c() {
-    remote "mkdir -p $SCRATCH_DIR/c-base/files/testuser"
     remote_sudo "dd if=/dev/urandom of=$SCRATCH_DIR/c-corrupt.bin bs=1M count=4" >/dev/null
     remote_sudo "chown $SSH_USER:$SSH_USER $SCRATCH_DIR/c-corrupt.bin" >/dev/null
-    remote "head -c 65536 /dev/urandom > $SCRATCH_DIR/c-base/files/testuser/model.goo"
-    seed_db_row c-base testuser model.goo
+    remote "head -c 65536 /dev/urandom > $SCRATCH_DIR/model-c.goo"
 
     remote_sudo "modprobe -r g_mass_storage" >/dev/null 2>&1
     remote_sudo "modprobe g_mass_storage file=/piusb.bin stall=0 ro=0 removable=1" >/dev/null 2>&1
 
-    if run_usb_refresh "$SCRATCH_DIR/c-corrupt.bin" "$SCRATCH_DIR/c-base" "$SCRATCH_DIR/c-mnt" >/dev/null 2>&1; then
+    if run_usb_refresh "$SCRATCH_DIR/c-corrupt.bin" "$SCRATCH_DIR/model-c.goo" "$SCRATCH_DIR/c-mnt" >/dev/null 2>&1; then
         fail "C: expected usb-refresh.sh to fail against an unmountable image, but it exited 0"
     elif remote_sudo "lsmod" | grep -q '^g_mass_storage'; then
         pass "C: mount failure -- script exited nonzero AND gadget module still loaded (fix confirmed)"
@@ -234,9 +219,33 @@ run_subtest_c() {
     fi
 }
 
+# --- Sub-test D: --clear empties the drive --------------------------------
+run_subtest_d() {
+    local local_src="$LOCAL_SCRATCH/model-d.goo" local_img="$LOCAL_SCRATCH/d-bare.bin"
+    head -c 65536 /dev/urandom > "$local_src"
+    dd if=/dev/zero of="$local_img" bs=1M count=64 status=none
+    mkdosfs -F 32 "$local_img" >/dev/null
+    remote_put "$local_src" "$SCRATCH_DIR/model-d.goo" >/dev/null
+    remote_put "$local_img" "$SCRATCH_DIR/d-bare.bin" >/dev/null
+
+    run_usb_refresh "$SCRATCH_DIR/d-bare.bin" "$SCRATCH_DIR/model-d.goo" "$SCRATCH_DIR/d-mnt" >/dev/null
+    if run_usb_refresh "$SCRATCH_DIR/d-bare.bin" "--clear" "$SCRATCH_DIR/d-mnt" >/dev/null; then
+        local loop listing
+        loop=$(remote_sudo "losetup -fP --show $SCRATCH_DIR/d-bare.bin" | tr -d '\r\n')
+        remote_sudo "mkdir -p $VMOUNT && mount $loop $VMOUNT" >/dev/null 2>&1
+        listing=$(remote_sudo "ls -A $VMOUNT" | tr -d '\r\n')
+        remote_sudo "umount $VMOUNT; losetup -d $loop" >/dev/null 2>&1
+        [ -z "$listing" ] && pass "D: --clear left the drive empty" \
+                          || fail "D: --clear left files behind: $listing"
+    else
+        fail "D: --clear exited nonzero"
+    fi
+}
+
 run_subtest_a
 run_subtest_b
 run_subtest_c
+run_subtest_d
 
 echo
 echo "=================================================================="

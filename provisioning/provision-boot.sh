@@ -4,7 +4,7 @@
 # user creation, SSH, and Wi-Fi (network-config's netplan wifis: block,
 # applied before the interface ever comes up) — this script no longer does
 # any of that itself. It only handles what cloud-init doesn't: the USB
-# gadget setup and the app deploy.
+# gadget setup and the pi-agent install.
 #
 # ⚠️ 2026-08-25 — do NOT assume `runcmd` firing means real networking is up.
 # That was this script's original assumption (cloud-init's final stage is
@@ -82,40 +82,34 @@ for _ in $(seq 1 36); do   # ~6 minutes, 10s per attempt
     sleep 10
 done
 
-# The gadget is already configured above and must come up regardless of
-# whether the app deploy succeeds — the printer doesn't care whether the web
-# portal is running, and a flaky/absent network shouldn't cost the reboot
-# that loads the new config.txt dtoverlay. So deploy failure (of any kind,
-# not just no-network) is caught and logged rather than aborting the script.
-deploy_app() {
-    if ! python3 -c 'import venv' 2>/dev/null; then
-        apt-get update
-        apt-get install -y python3-venv
-    fi
-    (cd "$BOOT/payload/printer-upload" && bash deploy.sh)
+# The pi-agent is a single static Go binary — no venv, no pip, no apt. It
+# also doesn't strictly need the network at install time (it just can't reach
+# the central portal until one exists / the config is filled in), so this
+# runs regardless of NETWORK_OK. The actual install is pi/install.sh — the
+# same script the manual/scp deploy uses — staged into the payload by
+# provision-sd.sh, so there's exactly one install implementation.
+install_agent() {
+    bash "$BOOT/payload/agent/install.sh" "$BOOT/payload/agent"
 }
 
-if [ "$NETWORK_OK" -eq 1 ]; then
-    checkpoint "network-confirmed-up"
-    echo "--- deploying printer-upload app ---"
-    if deploy_app; then
-        checkpoint "app-deploy-finished"
-        rm -rf "$BOOT/payload"
+echo "--- installing pi-agent ---"
+if install_agent; then
+    checkpoint "pi-agent-installed"
+    rm -rf "$BOOT/payload/agent"
+    if [ "$NETWORK_OK" -ne 1 ]; then
+        echo "!!! No working network — pi-agent is installed but can't reach" \
+             "the central portal yet. Fix networking, then edit" \
+             "/etc/resin-pi-agent.env and 'systemctl restart resin-pi-agent'." >&2
     else
-        checkpoint "app-deploy-failed"
-        echo "!!! app deploy failed (apt-get or deploy.sh) — see $LOG above" \
-             "for why. Payload left at $BOOT/payload for inspection; re-run" \
-             "the normal deploy steps from CLAUDE.md once fixed. The gadget" \
-             "is already configured and will still come up after the reboot" \
-             "below." >&2
+        echo "pi-agent installed. Edit /etc/resin-pi-agent.env with this" \
+             "printer's CENTRAL_BASE_URL / PRINTER_SLUG / PRINTER_API_KEY," \
+             "then 'systemctl restart resin-pi-agent'."
     fi
 else
-    checkpoint "network-never-came-up-skipping-app-deploy"
-    echo "!!! No working network after 6 minutes — wlan0 apparently never" \
-         "associated. Skipping app deploy entirely; the gadget is already" \
-         "configured and will still come up after the reboot below. Once" \
-         "networking is fixed, re-run the normal deploy steps from" \
-         "CLAUDE.md (payload left in place at $BOOT/payload)." >&2
+    checkpoint "pi-agent-install-failed"
+    echo "!!! pi-agent install failed — see $LOG above. Payload left at" \
+         "$BOOT/payload for inspection. The gadget is already configured and" \
+         "will still come up after the reboot below." >&2
 fi
 
 checkpoint "provision-boot-finished"

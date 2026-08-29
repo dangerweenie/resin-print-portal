@@ -1,0 +1,12 @@
+apiVersion: v2
+name: resin-portal
+description: Central portal for the resin-printer upload system — Go API + admin UI, a TinkerAccess roster-sync worker, and (optionally) a bundled Postgres.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+dependencies:
+  - name: postgresql
+    version: "16.7.27"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled

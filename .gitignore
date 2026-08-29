@@ -1,6 +1,5 @@
-# Runtime data and secrets — these live only on the deployed Pi, never in
-# the repo. If you're testing locally, they'll be generated fresh on first
-# run (see app.py) rather than reused from a shared/committed copy.
+# Runtime data and secrets — these live only on deployed devices, never in
+# the repo. Local dev/tests generate their own throwaway copies.
 settings.json
 settings.json.bak-*
 uploads.db
@@ -10,14 +9,25 @@ uploads.db.bak-*
 .initial_admin_password
 files/
 
-# Python
+# Python (legacy Flask app — being retired)
 __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
 
-# Large real member print files used for hands-on testing this session —
-# not sample/fixture data worth committing (large binaries, and some carry
-# real members' names in the filename). Ask in the project docs if you need
-# a small synthetic fixture per format for local testing instead.
+# Go
+/bin/
+*.test
+coverage.out
+
+# Fleet provisioning secrets (portal URL + enrollment token)
+provisioning/fleet.env
+
+# Helm: the Bitnami postgresql subchart is fetched with `helm dependency build`
+# from Chart.lock, not committed.
+deploy/helm/*/charts/
+deploy/helm/*/*.tgz
+
+# Large real member print files used for hands-on testing — not fixture data
+# worth committing (large binaries, some carry real members' names).
 sliced_scenes/

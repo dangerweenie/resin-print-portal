@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}Resin Print Portal{{end}}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+{{if .User}}
+<header class="topbar">
+  <span class="brand">Resin Print Portal</span>
+  <a href="/admin/printers">Printers</a>
+  <a href="/admin/certifications">Certifications</a>
+  <a href="/admin/members">Members</a>
+  <a href="/admin/jobs">Jobs</a>
+  <a href="/admin/log">Log</a>
+  <a href="/admin/settings">Settings</a>
+  <span style="margin-left:auto"></span>
+  <span class="muted">{{.User}}</span>
+  <a href="/admin/logout">Log out</a>
+</header>
+{{end}}
+<main>
+  {{if .Msg}}<div class="flash ok">{{.Msg}}</div>{{end}}
+  {{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+  {{block "content" .}}{{end}}
+</main>
+</body>
+</html>

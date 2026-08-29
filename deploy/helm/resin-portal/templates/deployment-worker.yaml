@@ -1,0 +1,38 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "resin-portal.fullname" . }}-worker
+  labels:
+    {{- include "resin-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  # Must be exactly 1: each tick reconciles the entire members table.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "resin-portal.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "resin-portal.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: worker
+          image: {{ include "resin-portal.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["worker"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "resin-portal.fullname" . }}-config
+            - secretRef:
+                name: {{ include "resin-portal.secretName" . }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+{{- end }}

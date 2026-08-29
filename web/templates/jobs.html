@@ -1,0 +1,47 @@
+{{define "title"}}Jobs — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Print jobs</h1>
+
+<h2>Currently printing</h2>
+<table>
+  <thead><tr><th>Printer</th><th>Who</th><th>File</th><th>Started</th><th>ETA</th><th></th></tr></thead>
+  <tbody>
+  {{range .Current}}
+    <tr>
+      <td><code>{{.PrinterSlug}}</code></td>
+      <td>{{.SlackNameUsed}}{{if .MemberName}} <span class="muted">({{.MemberName}})</span>{{end}}</td>
+      <td>{{.Filename}}</td>
+      <td>{{ts .StartedAt}}</td>
+      <td>{{humanDuration .EstimatedSeconds}}{{if .ETAExact}} (exact){{else}} (est){{end}}</td>
+      <td>
+        <form class="inline" method="post" action="/admin/jobs/force-clear"
+              onsubmit="return confirm('Force-clear this job?')">
+          <input type="hidden" name="job_id" value="{{.ID}}">
+          <button class="secondary" type="submit">Force clear</button>
+        </form>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="muted">All printers idle.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Recent history</h2>
+<table>
+  <thead><tr><th>Printer</th><th>Who</th><th>File</th><th>Started</th><th>Ended</th><th>Status</th><th>End reason</th></tr></thead>
+  <tbody>
+  {{range .History}}
+    <tr>
+      <td><code>{{.PrinterSlug}}</code></td>
+      <td>{{.SlackNameUsed}}</td>
+      <td>{{.Filename}}</td>
+      <td>{{ts .StartedAt}}</td>
+      <td>{{tsp .EndedAt}}</td>
+      <td>{{.Status}}</td>
+      <td>{{if .EndReason}}{{.EndReason}}{{else}}—{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

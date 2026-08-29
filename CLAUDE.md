@@ -3,8 +3,33 @@
 ## Goal
 A Raspberry Pi acts as a USB mass-storage gadget (a "USB drive") plugged into
 resin 3D printers that have no networking. The printer reads sliced files off the
-Pi's emulated drive. Long-term there's a Flask web upload portal, but **right now
-we are only trying to get a sliced test file to appear on the printer.**
+Pi's emulated drive.
+
+**Architecture (2026-08-27 rewrite — see README.md):** the Pi now runs a thin Go
+`pi-agent` (no local web app, no database) that serves one upload page on the
+makerspace LAN and forwards every submission to a **central Go portal** running
+in Kubernetes (Helm chart under `deploy/helm/`, Postgres on a PVC). The portal
+owns resin-printer certification, print-job tracking, the safety checklist, the
+audit log, and Slack posting; a background worker syncs membership status
+(A/I/S) from TinkerAccess's `get_users` endpoint
+(`docs/GET_MEMBERS_ENDPOINT.md`). Members identify themselves by Tinkermill
+Slack name (trust-based, resolved against the synced roster). The old per-Pi
+Flask app (`printer-upload/`) has been removed.
+
+A freshly-flashed Pi carries one fleet-wide constant — `CENTRAL_BASE_URL`, set
+once in `provisioning/fleet.env` — and **self-registers** on first boot via
+`POST /api/v1/enroll`: the portal creates a `printers` row keyed by the Pi's
+hardware id, slug = hostname, and issues a per-Pi API key the Pi persists to
+`/var/lib/resin-pi-agent/creds.env`. It starts unapproved; an admin clicks
+Approve once under Printers → Pending — **that approval is the security gate**.
+`ENROLL_TOKEN` (both sides) is optional extra hardening for a public-facing
+portal; without it the enroll endpoint is open and only the approval gates
+anything. Nothing is configured per Pi.
+
+The USB-gadget half of the system below is unchanged and still load-bearing —
+`usb-refresh.sh`, `piusb-gadget.service`, the `config.txt` dtoverlay, and all
+the printer-firmware findings still apply exactly. Only the "what decides who
+can print, and where files come from" layer changed.
 
 ## Printers on hand (test targets, in priority order)
 1. **Anycubic Photon Mono M7 Pro** — CURRENT TARGET. The picky one. Reads `.pwsz`
@@ -31,45 +56,46 @@ we are only trying to get a sliced test file to appear on the printer.**
 
 ## Build, test, and deploy
 
-Everything below runs from the repo root, on whatever machine you're
-developing on (not the Pi).
+The central portal is Go (`cmd/portal`, `cmd/pi-agent`). Needs Go 1.24+ and
+Docker for a throwaway Postgres. See README.md for the full walkthrough; the
+short version, from the repo root:
 
-### Build (set up a local dev environment)
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r printer-upload/requirements-dev.txt
+make run-db              # local Postgres on :55432
+make test               # unit tests, no DB
+make test-integration   # + store/worker tests against run-db (skip without TEST_DATABASE_URL)
+make build              # -> bin/portal   (server | worker | migrate subcommands)
+make pi-agent           # -> bin/pi-agent-armv6   (static, cross-compiled for the Zero W)
+make helm-lint          # fetch the Bitnami postgres subchart, lint + render the chart
 ```
-Creates an isolated Python environment in `.venv/` (already gitignored) and
-installs the pinned app dependencies (Flask, Werkzeug, gunicorn) plus
-pytest — nothing is installed system-wide. Re-run the `pip install` line
-any time `printer-upload/requirements.txt` or `requirements-dev.txt`
-changes.
 
-### Test
+The store/worker tests self-skip unless `TEST_DATABASE_URL` points at a
+disposable database (same pattern the old loop-device test used for root).
+
+### Deploy — central portal
+Kubernetes + Helm: `helm install portal deploy/helm/resin-portal ...`.
+`values.yaml` documents every setting; migrations run as a
+`post-install,pre-upgrade` hook. Bundled Bitnami Postgres with a PVC by
+default; `postgresql.enabled=false` + `externalDatabase.dsn` to bring your own.
+
+### Deploy — Pi agent
+Fresh SD card is the normal path: `make pi-agent`, set `CENTRAL_URL` once in
+`provisioning/fleet.env` (an `ENROLL_TOKEN` there is optional), then
+`provisioning/provision-sd.sh` (see `docs/second-pi-setup.md`). The Pi
+self-registers on first boot; approve it once in the admin UI under
+Printers → Pending. Nothing is configured per Pi.
+
+Manual/scp path (existing Pi, or no card reader):
 ```bash
-.venv/bin/pytest printer-upload/tests/
+make pi-agent
+scp bin/pi-agent-armv6 usb-refresh.sh pi/resin-pi-agent.service pi/install.sh \
+    pi/config.example.env captain@<pi>.lan:~/agent-install/
+ssh captain@<pi>.lan 'sudo bash ~/agent-install/install.sh ~/agent-install'
+# edit /etc/resin-pi-agent.env — set CENTRAL_BASE_URL (ENROLL_TOKEN optional) — then:
+# sudo systemctl restart resin-pi-agent
 ```
-This is the full off-hardware suite — no Raspberry Pi, root, or hardware
-access needed to run it. One test module needs root + loop-device tools and
-skips itself automatically when those aren't available; that's expected,
-not a failure. All tests should pass before deploying.
-
-### Deploy (push the app onto an already-set-up Pi)
-```bash
-scp -r printer-upload usb-refresh.sh captain@<pi-hostname>.lan:~/resin-print-portal/
-ssh captain@<pi-hostname>.lan 'cd ~/resin-print-portal/printer-upload && sudo bash deploy.sh'
-```
-Replace `<pi-hostname>` with the target Pi's hostname (e.g. `resin` for the
-first Pi — use `.lan`, not `.local`, from a WSL2 client). `sudo` will
-prompt for the Pi's password interactively. `deploy.sh` copies the app
-files into `/opt/printer-upload`, creates/updates a **separate** Python
-venv there (from `requirements.txt`) — distinct from the `.venv/` used for
-local dev/tests above — and restarts the `printer-upload` systemd service.
-
-If the target Pi hasn't been set up yet at all (fresh SD card, no
-`/opt/printer-upload` present), do that first — `docs/second-pi-setup.md`
-is the full step-by-step runbook. After deploying, `hw-tests/README.md`
-covers validating the change actually works against real gadget hardware.
+`install.sh` also retires the old Flask `printer-upload.service` if present.
+`hw-tests/README.md` covers on-hardware validation.
 
 ## ⚠️ UPDATE 2026-08-21 — central hypothesis below is FALSIFIED, see "CONFIRMED
 ## WORKING" section further down before acting on anything in this block.
@@ -229,8 +255,10 @@ the partition device instead if you want to run it, otherwise it's optional.
    `dwc2` dr_mode lines) and rebuild `/piusb.bin` as bare FAT32 per the old
    "verified recipe" — it may be unnecessary now given the confirmed run above,
    but it's still sloppy config worth resolving once things are stable.
-3. Move on to the Flask web upload portal (the actual long-term goal) once
-   print-to-completion is confirmed.
+3. **Central portal rewrite landed 2026-08-27** (Go service + Postgres + Helm +
+   thin `pi-agent`). Not yet hardware-verified end-to-end: stand up the portal,
+   create the M7 Pro printer + link Slack names + certify the known members,
+   install `pi-agent` on `resin`, and run `hw-tests/` against the Pi + M7 Pro.
 
 ## Working style the user wants
 - ONE action/instruction at a time; wait for confirmation before the next step.

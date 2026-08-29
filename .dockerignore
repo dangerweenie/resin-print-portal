@@ -1,0 +1,13 @@
+.git
+.github
+deploy
+docs
+hw-tests
+pi
+provisioning
+sliced_scenes
+*.md
+.venv
+.pytest_cache
+**/__pycache__
+bin

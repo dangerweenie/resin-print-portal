@@ -1,8 +1,8 @@
 #!/bin/bash
-# Layer 3 of hw-tests/: confirms printer-upload.service actually recovers
+# Layer 3 of hw-tests/: confirms the resin-pi-agent.service actually recovers
 # from a hard crash on real systemd, on the real Pi -- and that killing the
-# WEB APP never touches the USB gadget, which must keep serving whatever
-# file it already has regardless of whether the portal is up. Driven FROM
+# AGENT never touches the USB gadget, which must keep serving whatever
+# file it already has regardless of whether the agent or central portal is up. Driven FROM
 # THIS LAPTOP over SSH -- nothing is installed on the Pi; every remote
 # command is systemctl/lsmod, already required for the gadget/app to run
 # in production at all. The HTTP health check runs locally against the
@@ -10,7 +10,7 @@
 #
 # Does NOT reboot the Pi -- an SSH session can't reliably survive
 # triggering its own host's reboot, so full boot-recovery (does
-# piusb-gadget.service + printer-upload.service come back after a real
+# piusb-gadget.service + resin-pi-agent.service come back after a real
 # reboot/power cycle) is a manual step -- see MANUAL-CHECKLIST.md.
 #
 # Usage:
@@ -48,8 +48,8 @@ trap remote_teardown EXIT
 
 ACTUAL_HOST=$(remote hostname | tr -d '\r\n')
 echo "=================================================================="
-echo " This SIGKILLs the real printer-upload.service on $ACTUAL_HOST ($HOST)"
-echo " to test crash-recovery. The web portal will be briefly unreachable."
+echo " This SIGKILLs the real resin-pi-agent.service on $ACTUAL_HOST ($HOST)"
+echo " to test crash-recovery. The upload page will be briefly unreachable."
 echo " The USB gadget itself should NOT be affected."
 echo "=================================================================="
 if [ "$ACTUAL_HOST" != "resin1" ] || [ "$YES" != "1" ]; then
@@ -57,8 +57,8 @@ if [ "$ACTUAL_HOST" != "resin1" ] || [ "$YES" != "1" ]; then
     [ "$CONFIRM" = "$ACTUAL_HOST" ] || { echo "Aborted."; exit 3; }
 fi
 
-if ! remote_sudo "systemctl list-unit-files printer-upload.service" >/dev/null 2>&1; then
-    echo "printer-upload.service isn't installed on $ACTUAL_HOST -- deploy first." >&2
+if ! remote_sudo "systemctl list-unit-files resin-pi-agent.service" >/dev/null 2>&1; then
+    echo "resin-pi-agent.service isn't installed on $ACTUAL_HOST -- run pi/install.sh first." >&2
     exit 2
 fi
 if ! remote_sudo "test -f $IMAGE"; then
@@ -67,19 +67,19 @@ if ! remote_sudo "test -f $IMAGE"; then
 fi
 
 # --- Baseline: service up, gadget loaded -----------------------------
-if ! remote_sudo "systemctl is-active --quiet printer-upload"; then
-    fail "baseline: printer-upload.service was not active before the test even started"
+if ! remote_sudo "systemctl is-active --quiet resin-pi-agent"; then
+    fail "baseline: resin-pi-agent.service was not active before the test even started"
     echo; printf '%s\n' "${RESULTS[@]}"; exit 1
 fi
 GADGET_WAS_LOADED=0
 remote_sudo "lsmod" | grep -q '^g_mass_storage' && GADGET_WAS_LOADED=1
 
-# --- Kill it hard, then poll for systemd's Restart=always to bring it back
-remote_sudo "systemctl kill -s SIGKILL printer-upload" >/dev/null 2>&1
+# --- Kill it hard, then poll for systemd's Restart=on-failure to bring it back
+remote_sudo "systemctl kill -s SIGKILL resin-pi-agent" >/dev/null 2>&1
 
 RECOVERED=0
 for _ in $(seq 1 20); do   # up to 10s
-    if remote_sudo "systemctl is-active --quiet printer-upload"; then
+    if remote_sudo "systemctl is-active --quiet resin-pi-agent"; then
         RECOVERED=1
         break
     fi
@@ -87,9 +87,9 @@ for _ in $(seq 1 20); do   # up to 10s
 done
 
 if [ "$RECOVERED" = "1" ]; then
-    pass "systemd restarted printer-upload.service after SIGKILL (Restart=always honored)"
+    pass "systemd restarted resin-pi-agent.service after SIGKILL (Restart=on-failure honored)"
 else
-    fail "printer-upload.service did NOT come back within 10s of being killed"
+    fail "resin-pi-agent.service did NOT come back within 10s of being killed"
 fi
 
 # --- Confirm the app actually answers HTTP again, not just "active" -----

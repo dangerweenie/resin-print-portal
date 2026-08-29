@@ -1,0 +1,78 @@
+image:
+  repository: ghcr.io/dangerweenie/resin-portal
+  tag: ""              # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# API server (stateless, scale freely — this is the multicore workload).
+server:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+# Roster-sync worker. MUST stay at a single replica — it reconciles the whole
+# members table each tick and needs no leader election at replica 1.
+worker:
+  enabled: true
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 250m, memory: 256Mi }
+
+# TinkerAccess get_users endpoint (see docs/GET_MEMBERS_ENDPOINT.md).
+tinkerAccess:
+  baseURL: "http://tinker-access.default.svc.cluster.local:3000"
+  # Full path incl. the Leptos hash suffix. If it 404s, recover per the doc.
+  getUsersPath: "/api/get_users11102523982452806591"
+
+sync:
+  interval: "10m"
+
+app:
+  logLevel: "info"
+  adminUsername: "captain"
+  # Set adminPassword (or provide it via existingSecret) so the first admin can
+  # log in. It is only used to seed an empty admins table.
+  adminPassword: ""
+  # Optional bearer key for GET /api/v1/status. Blank disables that endpoint.
+  statusApiKey: ""
+  # Optional. Pi self-enrollment (POST /api/v1/enroll) is ON either way — admin
+  # approval under Printers -> Pending is the real gate. Set a long random string
+  # (also in provisioning/fleet.env as ENROLL_TOKEN) to additionally require it,
+  # e.g. when the portal is reachable from the public internet.
+  enrollToken: ""
+  # 32+ byte random string; generated into the Secret if left blank.
+  sessionSecret: ""
+
+# Reference a pre-made Secret instead of rendering one from the values above.
+# It must contain: DATABASE_URL, SESSION_SECRET, ADMIN_PASSWORD, STATUS_API_KEY,
+# ENROLL_TOKEN.
+existingSecret: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: portal.example.org
+  tls: false
+  tlsSecretName: ""
+
+# Bundled Postgres (Bitnami subchart). Set enabled=false and fill
+# externalDatabase.dsn to use your own database instead.
+postgresql:
+  enabled: true
+  auth:
+    username: portal
+    password: change-me-in-values
+    database: portal
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+externalDatabase:
+  # e.g. postgres://user:pass@host:5432/portal?sslmode=require
+  dsn: ""

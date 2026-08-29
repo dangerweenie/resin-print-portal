@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "resin-portal.fullname" . }}-config
+  labels:
+    {{- include "resin-portal.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.app.logLevel | quote }}
+  LISTEN_ADDR: ":8080"
+  ADMIN_USERNAME: {{ .Values.app.adminUsername | quote }}
+  TINKERACCESS_BASE_URL: {{ .Values.tinkerAccess.baseURL | quote }}
+  TINKERACCESS_GET_USERS_PATH: {{ .Values.tinkerAccess.getUsersPath | quote }}
+  SYNC_INTERVAL: {{ .Values.sync.interval | quote }}

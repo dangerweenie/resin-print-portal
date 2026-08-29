@@ -1,0 +1,15 @@
+{{define "title"}}Edit {{.P.Slug}} — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Edit printer <code>{{.P.Slug}}</code></h1>
+<p><a href="/admin/printers">← all printers</a></p>
+<form method="post" action="/admin/printers/{{.P.ID}}">
+  <p><label>Display name<br><input type="text" name="display_name" value="{{.P.DisplayName}}"></label></p>
+  <p><label>Model<br><input type="text" name="model" value="{{.P.Model}}"></label></p>
+  <p><label>Allowed extensions (comma separated, blank = any)<br>
+     <input type="text" name="allowed_extensions" value="{{.ExtensionsText}}"></label></p>
+  <p><label>Safety checklist (one item per line)<br>
+     <textarea name="safety_checklist">{{.ChecklistText}}</textarea></label></p>
+  <p><label>Slack webhook URL<br><input type="text" name="slack_webhook_url" value="{{.P.SlackWebhookURL}}"></label></p>
+  <p><button type="submit">Save</button></p>
+</form>
+{{end}}

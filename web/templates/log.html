@@ -1,0 +1,21 @@
+{{define "title"}}Decision log — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Decision log</h1>
+<p class="muted">Every check and upload attempt, approved or denied.</p>
+<table>
+  <thead><tr><th>When</th><th>Printer</th><th>Slack name</th><th>Member</th><th>File</th><th>Outcome</th><th>Reason</th></tr></thead>
+  <tbody>
+  {{range .Entries}}
+    <tr>
+      <td>{{ts .TS}}</td>
+      <td>{{if .PrinterSlug}}<code>{{.PrinterSlug}}</code>{{else}}—{{end}}</td>
+      <td>{{.SlackNameUsed}}</td>
+      <td>{{if .MemberName}}{{.MemberName}}{{else}}—{{end}}</td>
+      <td>{{if .Filename}}{{.Filename}}{{else}}—{{end}}</td>
+      <td>{{.Outcome}}</td>
+      <td>{{if .Reason}}{{.Reason}}{{else}}—{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

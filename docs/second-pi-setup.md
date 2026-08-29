@@ -14,7 +14,7 @@ Imager's Advanced Options each time. That's replaced by
 `provisioning/provision-sd.sh` (repo root), which can flash + partition
 the SD card itself (`--device` mode) or just provision an
 already-flashed one (`--boot` mode), then hands off to cloud-init to
-finish the rest of this whole runbook (gadget setup, app deploy)
+finish the rest of this runbook (gadget setup, pi-agent install)
 unattended. See below.
 
 **Status: NOT YET HARDWARE-VERIFIED.** The automated path was built from
@@ -22,6 +22,13 @@ current Raspberry Pi OS Trixie docs/source, not confirmed against a real
 card yet. Run through it once, watch it actually come up, before relying on
 it for a real site deploy. If it doesn't work, the old manual steps
 (preserved further down under "Manual fallback") still get you there.
+
+`make test-provision` (`provisioning/test-provision-sd.sh`) is an off-hardware
+check: it runs `provision-sd.sh --boot` against a fake boot partition and
+verifies the cloud-init files, the staged `pi-agent` payload, and that
+`pi/install.sh` (the single installer `provision-boot.sh` now calls on the Pi)
+lays every file down where it should. It catches the staging contract
+drifting; it does **not** replace booting a real card.
 
 ## ⚠️ 2026-08-25 — provisioning rebuilt on cloud-init, not the old firstrun.sh hack
 The first version of this automated path disabled cloud-init outright and
@@ -52,7 +59,7 @@ own (network-config is applied before the interface ever comes up;
 `runcmd` only fires once real networking is up), so the two-stage
 reboot-and-wait dance is gone — `provisioning/provision-boot.sh` (which
 replaces both `firstrun.sh` and `provision-stage2.sh`) runs once, via
-`runcmd`, and handles the USB gadget + app deploy in one pass, then
+`runcmd`, and handles the USB gadget + pi-agent install in one pass, then
 reboots itself once at the end so the new `config.txt` dtoverlay (device
 tree overlays only load at firmware/bootloader time, not hot-reloadable)
 takes effect.
@@ -92,65 +99,76 @@ captive-portal/in-field provisioning (see "Not yet started" below).
 
 2. Eject the card, put it in the Pi, power it on, and wait — cloud-init
    brings up hostname/user/SSH/Wi-Fi on the first boot (from `user-data`/
-   `network-config`), then its `runcmd` stage (which only fires once real
-   networking is up, so `apt`/`pip install` just works — no separate
-   network-wait stage needed) runs `provisioning/provision-boot.sh` for
-   the USB gadget + app deploy. That script reboots itself once more at
-   the end so the new `config.txt` dtoverlay loads. A few minutes total.
+   `network-config`), then its `runcmd` stage runs
+   `provisioning/provision-boot.sh` for the USB gadget + pi-agent install
+   (the agent is a single static Go binary — no `apt`/`pip` involved).
+   That script reboots itself once more at the end so the new `config.txt`
+   dtoverlay loads. A few minutes total.
+
+   **Before flashing** (one-time fleet setup):
+   ```bash
+   make pi-agent                                  # -> bin/pi-agent-armv6
+   cp provisioning/fleet.env.example provisioning/fleet.env
+   $EDITOR provisioning/fleet.env                 # CENTRAL_URL (ENROLL_TOKEN optional)
+   ```
+   `provision-sd.sh` bakes `CENTRAL_URL` (identical on every card) into the Pi's
+   `/etc/resin-pi-agent.env`. It errors out if the binary or `CENTRAL_URL` is
+   missing. `ENROLL_TOKEN` is optional — set it only if the portal requires one
+   (a public-facing deployment); otherwise enrollment is open and the admin
+   approving the Pi is the security gate.
 3. Verify:
    ```bash
    ssh captain@<hostname>.lan   # NOT .local — mDNS doesn't resolve from
                                  # this WSL2 client; use .lan (or the IP)
-   cat /var/log/provision-boot.log   # confirm the gadget+app deploy step finished
-   curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # expect 200
+   cat /var/log/provision-boot.log   # confirm the gadget + pi-agent step finished
+   systemctl status resin-pi-agent piusb-gadget
+   journalctl -u resin-pi-agent | tail   # look for "enrolled" then "waiting for ... approve"
    ```
-   If SSH never comes up at all, pull the card and check
-   `/boot-progress.log` and `/var/log/cloud-init-output.log` (root needed
-   for the latter) on the boot/root partitions from a card reader —
-   between them they show how far a stuck boot actually got.
+   If SSH never comes up at all, pull the card and check `/boot-progress.log`
+   and `/var/log/cloud-init-output.log` from a card reader.
 
 From here, the Pi has: hostname/user/SSH set, Wi-Fi connected, Bluetooth/
 avahi/triggerhappy disabled, `dtoverlay=dwc2,dr_mode=peripheral` +
 `gpu_mem=16` in `config.txt`, a bare-FAT32 `/piusb.bin` with a
-`piusb-gadget` systemd unit that (re)loads the gadget on **every** boot —
-not just the first, which the old manual recipe never covered — and the
-Flask portal deployed and running under systemd.
+`piusb-gadget` systemd unit that (re)loads the gadget on **every** boot,
+and `resin-pi-agent.service` running — it has already self-registered with
+the portal and is waiting to be approved.
 
-## 2. Configure for the target printer (still manual)
-Log into `/admin` (username `captain`, password from
-`/opt/printer-upload/.initial_admin_password` — generated fresh on first
-run, not a fixed default; change it via Settings and delete that file),
-then in Settings:
-- **Printer Name** — whatever this Pi's printer actually is.
-- **File Type Filter** — enable it, set to *only* that printer's actual
-  supported extensions. Don't skip this — the first Pi's default filter
-  didn't match the M7 Pro's real formats and it took a confusing "empty
-  screen" moment to notice.
-- **Supports folders** — leave unchecked. Currently unused/moot anyway
-  (the drive only ever holds the current job's single file — see
-  `resin_plans.md`), kept only in case multi-file browsing comes back later.
-- **Safety Checklist** — review/adjust the default items if this printer
-  has different physical-check needs (different vat/plate mechanism, etc).
-- **Slack webhook** — optional, same as the first Pi.
+## 2. Approve the printer
 
-This step is inherently printer-specific and manual — not something the
-provisioning script attempts.
+The Pi registered itself on first boot. In the admin UI → **Printers →
+Pending**, find the row (it's keyed by the Pi's hostname) and click
+**Approve**. That's it — nothing to configure on the Pi.
 
-## 3. Certify members
-Each Pi has its own separate `members` table — **certifying someone on the
-first Pi does NOT give them access on this one.** If Hunter/Ed/Matt (or
-anyone else) need access here too, they need a *separate* account created
-via this Pi's own `/admin/members`, even though it's the same physical
-person. This is a deliberate consequence of "one Pi = one printer = an
-account here means certified on this specific printer" — not a bug, but
-worth knowing about so it doesn't look like a broken sync.
+Optionally, click into the printer and set its **model** (enables the
+sliced-for cross-check) and **allowed extensions** for that machine's real
+format(s). The default is "accept anything" plus the standard safety
+checklist, so it works without this.
 
-## Redeploying app code changes (not a fresh flash)
-Once a Pi is already provisioned, pushing a code change doesn't need any of
-the above — use the normal deploy path from `CLAUDE.md`:
+Then link Slack names and certify members under **Members** /
+**Certifications**.
+
 ```bash
-scp -r printer-upload usb-refresh.sh captain@<hostname>.lan:~/resin-print-portal/
-ssh captain@<hostname>.lan 'cd ~/resin-print-portal/printer-upload && sudo bash deploy.sh'
+# on the Pi, confirm it went live after approval:
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost/   # expect 200
+```
+
+## 3. Certification is central now
+
+Unlike the old per-Pi Flask app, there is **one** members roster and one
+certification list, in the central portal's Postgres. Certifying someone
+for this printer in the admin UI is all that's needed — no per-Pi account
+creation. Membership active/inactive comes from TinkerAccess automatically
+via the sync worker.
+
+## Redeploying the agent (not a fresh flash)
+Once a Pi is provisioned, pushing an agent update:
+```bash
+make pi-agent
+scp bin/pi-agent-armv6 usb-refresh.sh captain@<hostname>.lan:~/
+ssh captain@<hostname>.lan 'sudo install -m0755 ~/pi-agent-armv6 /usr/local/bin/pi-agent && \
+    sudo install -m0755 ~/usb-refresh.sh /usr/local/bin/usb-refresh.sh && \
+    sudo systemctl restart resin-pi-agent'
 ```
 
 ## Manual fallback (if the automated flash-and-provision path fails)
@@ -192,14 +210,22 @@ sudo cp piusb-gadget.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now piusb-gadget
 ```
 
-**Deploy the Flask portal**:
+**Install the pi-agent** (build it on your dev machine first with
+`make pi-agent`):
 ```bash
-scp -r printer-upload usb-refresh.sh captain@<hostname>.lan:~/resin-print-portal/
-ssh captain@<hostname>.lan 'cd ~/resin-print-portal/printer-upload && sudo bash deploy.sh'
+scp bin/pi-agent-armv6 usb-refresh.sh pi/resin-pi-agent.service pi/install.sh \
+    pi/config.example.env captain@<hostname>.lan:~/agent-install/
+ssh captain@<hostname>.lan 'sudo bash ~/agent-install/install.sh ~/agent-install'
+# install.sh seeds /etc/resin-pi-agent.env from config.example.env — set
+# CENTRAL_BASE_URL in it (ENROLL_TOKEN only if the portal requires one), then:
+ssh captain@<hostname>.lan 'sudo nano /etc/resin-pi-agent.env && sudo systemctl restart resin-pi-agent'
 ```
-(`deploy.sh` installs its own systemd unit now — no separate manual unit-file
-step needed.) `apt install python3-venv` first if the venv step errors —
-it's not preinstalled on Lite images.
+The Pi then self-registers; approve it in the admin UI under **Printers →
+Pending**.
+`install.sh` drops the binary at `/usr/local/bin/pi-agent`, installs the
+systemd unit, seeds `/etc/resin-pi-agent.env`, and removes the old Flask
+`printer-upload.service` / `/opt/printer-upload` if it finds them. No Python
+on the Pi at all.
 
 ## Not yet started
 - Captive-portal wifi provisioning — not built anywhere yet. Wi-Fi still
