@@ -59,6 +59,9 @@ grep -q '^dtoverlay=disable-bt' "$CONFIG" || \
     printf 'dtoverlay=disable-bt\n' >> "$CONFIG"
 grep -q '^gpu_mem=' "$CONFIG" || \
     printf 'gpu_mem=16\n' >> "$CONFIG"
+# SPI for the optional MFRC522 RFID fob reader. Harmless if no reader is wired.
+grep -q '^dtparam=spi=on' "$CONFIG" || \
+    printf 'dtparam=spi=on\n' >> "$CONFIG"
 
 echo "--- USB gadget image ---"
 if [ ! -f /piusb.bin ]; then

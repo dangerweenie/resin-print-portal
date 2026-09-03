@@ -12,9 +12,10 @@ in Kubernetes (Helm chart under `deploy/helm/`, Postgres on a PVC). The portal
 owns resin-printer certification, print-job tracking, the safety checklist, the
 audit log, and Slack posting; a background worker syncs membership status
 (A/I/S) from TinkerAccess's `get_users` endpoint
-(`docs/GET_MEMBERS_ENDPOINT.md`). Members identify themselves by Tinkermill
-Slack name (trust-based, resolved against the synced roster). The old per-Pi
-Flask app (`printer-upload/`) has been removed.
+(`docs/GET_MEMBERS_ENDPOINT.md`). Members identify themselves by **tapping their
+RFID fob** — the UID is matched against `members.code` from the synced roster
+(the portal also still accepts a Slack name from other callers, but the Pi is
+fob-only). The old per-Pi Flask app (`printer-upload/`) has been removed.
 
 A freshly-flashed Pi carries one fleet-wide constant — `CENTRAL_BASE_URL`, set
 once in `provisioning/fleet.env` — and **self-registers** on first boot via
@@ -22,14 +23,41 @@ once in `provisioning/fleet.env` — and **self-registers** on first boot via
 hardware id, slug = hostname, and issues a per-Pi API key the Pi persists to
 `/var/lib/resin-pi-agent/creds.env`. It starts unapproved; an admin clicks
 Approve once under Printers → Pending — **that approval is the security gate**.
+The agent re-checks its registration on start and every 2 min: if the portal
+401/403/404s the stored key (deleted printer, rotated key, wiped DB) it
+discards the creds and re-enrolls; transient errors never trigger that.
 `ENROLL_TOKEN` (both sides) is optional extra hardening for a public-facing
 portal; without it the enroll endpoint is open and only the approval gates
 anything. Nothing is configured per Pi.
+
+**Fleet version + self-update (2026-09-03):** every binary carries a
+`git describe` version (`internal/buildinfo`, `-ldflags -X`), and the pi-agent
+sends it to the portal on every call (`X-Agent-Version`) — surfaced on the
+admin Printers page with a "behind" badge. The portal image bundles the
+cross-compiled `pi-agent-armv6` it was built with (`/agent/pi-agent-armv6`,
+`AGENT_BINARY_PATH`) and serves it at `GET /api/v1/printers/{slug}/agent-binary`
++ `/agent-update` (printer bearer auth). `AGENT_AUTO_UPDATE=true` converges the
+fleet to the portal's build; per-Pi **Update now** / **Hold** override it
+(`printers.agent_target_override` / `agent_update_hold`, migration `00002`).
+The Pi's `SelfUpdater` (`internal/piagent/selfupdate.go`) checks every 5 min,
+never swaps mid-print, verifies SHA-256, keeps `pi-agent.prev`, and exits clean
+so systemd (`Restart=always`) relaunches; `pi/agent-guard.sh` (`ExecStartPre`)
+rolls back on a crash-loop. All update state is in `/var/lib/resin-pi-agent`,
+never the boot partition — still nothing configured per Pi.
 
 The USB-gadget half of the system below is unchanged and still load-bearing —
 `usb-refresh.sh`, `piusb-gadget.service`, the `config.txt` dtoverlay, and all
 the printer-firmware findings still apply exactly. Only the "what decides who
 can print, and where files come from" layer changed.
+
+**Identity is the RFID fob and nothing else** — no name-entry mode, no switch.
+Every Pi has an MFRC522 on fixed pins (SPI0.0 / GPIO25); the agent won't start
+without it. `internal/rfid` is a pure-Go MFRC522 driver via `periph.io`; the Pi
+sends the UID as canonical hex and the portal (`internal/fobcode` +
+`store.ResolveRFIDCode`) matches it against `members.code` in every format.
+Nothing about the fob is configurable on the Pi. Each tap hits `/check` once
+(deduped for a held fob) and is recorded in `decision_log`. `pi-agent -probe`
+is a wiring diagnostic only.
 
 ## Printers on hand (test targets, in priority order)
 1. **Anycubic Photon Mono M7 Pro** — CURRENT TARGET. The picky one. Reads `.pwsz`

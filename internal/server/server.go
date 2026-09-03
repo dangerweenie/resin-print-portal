@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dangerweenie/resin-print-portal/internal/buildinfo"
 	"github.com/dangerweenie/resin-print-portal/internal/config"
 	"github.com/dangerweenie/resin-print-portal/web"
 	"github.com/go-chi/chi/v5"
@@ -21,12 +22,13 @@ import (
 
 // Server holds the dependencies shared by every handler.
 type Server struct {
-	st    DataStore
-	cfg   *config.Portal
-	log   *slog.Logger
-	sc    *securecookie.SecureCookie
-	pages map[string]*template.Template
-	nowFn func() time.Time
+	st       DataStore
+	cfg      *config.Portal
+	log      *slog.Logger
+	sc       *securecookie.SecureCookie
+	pages    map[string]*template.Template
+	nowFn    func() time.Time
+	agentBin agentBinary
 }
 
 // New builds a Server and parses the embedded templates.
@@ -37,6 +39,13 @@ func New(st DataStore, cfg *config.Portal, log *slog.Logger) (*Server, error) {
 		log:   log,
 		sc:    securecookie.New(cfg.SessionSecret, nil),
 		nowFn: time.Now,
+	}
+	s.agentBin = loadAgentBinary(cfg.AgentBinaryPath, buildinfo.Resolve())
+	if s.agentBin.OK {
+		log.Info("pi-agent self-update binary loaded",
+			"path", s.agentBin.Path, "version", s.agentBin.Version, "sha256", s.agentBin.SHA256)
+	} else {
+		log.Info("no pi-agent binary bundled — fleet self-update disabled", "path", cfg.AgentBinaryPath)
 	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
@@ -109,6 +118,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/current-job", s.handleCurrentJob)
 		r.Post("/jobs/{id}/started", s.handleJobStarted)
 		r.Post("/jobs/{id}/finished", s.handleJobFinished)
+		r.Get("/agent-update", s.handleAgentUpdate)
+		r.Get("/agent-binary", s.handleAgentBinary)
 	})
 
 	// Pi self-enrollment — fleet bootstrap token.
@@ -138,6 +149,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/printers/{id}/approve", s.handlePrinterApprove)
 			r.Post("/printers/{id}/disable", s.handlePrinterDisable)
 			r.Post("/printers/{id}/delete", s.handlePrinterDelete)
+			r.Post("/printers/{id}/agent-update", s.handlePrinterAgentUpdate)
 			r.Get("/certifications", s.handleCertifications)
 			r.Post("/certifications", s.handleCertifyToggle)
 			r.Get("/jobs", s.handleJobs)

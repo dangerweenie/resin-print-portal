@@ -70,6 +70,18 @@
   .muted { color: var(--muted); font-size: .82rem; }
   hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0 1.25rem; }
   ::selection { background: rgba(217,138,92,.28); }
+  .fob {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 3px; padding: 1rem 1.15rem; margin: 1rem 0;
+    display: flex; align-items: center; gap: .8rem;
+  }
+  .fob .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); flex: none; }
+  .fob.ok .dot { background: var(--ok); }
+  .fob.bad .dot { background: var(--err); }
+  .fob .txt { font-size: .86rem; }
+  .fob.ok .txt { color: var(--ok); }
+  .fob.bad .txt { color: var(--err); }
+  button[disabled] { opacity: .4; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -103,8 +115,8 @@
 </div>
 {{else}}
 <form method="post" action="/submit" enctype="multipart/form-data">
-  <label for="slack_name">Your Tinkermill Slack name</label>
-  <input type="text" id="slack_name" name="slack_name" autocomplete="off" placeholder="e.g. jane.doe" required>
+  <label>Identify yourself</label>
+  <div class="fob" id="fob"><span class="dot"></span><span class="txt" id="fobtxt">Tap your Tinkermill fob on the reader…</span></div>
 
   <label for="file">Sliced file{{if .Config.AllowedExtensions}}
     <span class="exts">({{range .Config.AllowedExtensions}}{{.}} {{end}})</span>{{end}}</label>
@@ -117,11 +129,43 @@
   {{end}}
   {{end}}
 
-  <button type="submit">Send to printer</button>
+  <button type="submit" id="sendbtn" disabled>Send to printer</button>
 </form>
 
 <hr>
 <p class="muted">The portal checks your membership and resin-printer certification before anything reaches the printer.</p>
+
+<script>
+(function () {
+  var fob = document.getElementById('fob'), txt = document.getElementById('fobtxt'),
+      btn = document.getElementById('sendbtn');
+  function setBtn() { btn.disabled = !fob.classList.contains('ok'); }
+  async function poll() {
+    try {
+      var r = await fetch('/scan', {cache: 'no-store'});
+      var s = await r.json();
+      fob.classList.remove('ok', 'bad');
+      if (!s.scanned) {
+        txt.textContent = 'Tap your Tinkermill fob on the reader…';
+      } else if (s.allowed) {
+        fob.classList.add('ok');
+        txt.textContent = 'Tapped: ' + (s.member_name || 'member') + ' ✓';
+      } else {
+        fob.classList.add('bad');
+        txt.textContent = ({
+          unknown_fob: 'That fob isn’t linked to an active member.',
+          not_certified: 'You’re not certified for this printer.',
+          membership_inactive: 'Your membership isn’t active.',
+          printer_pending_approval: 'This printer is awaiting admin approval.',
+          portal_unreachable: 'Can’t reach the portal right now.'
+        }[s.reason]) || ('Fob not accepted (' + (s.reason || 'unknown') + ').');
+      }
+      setBtn();
+    } catch (e) { /* keep last state */ }
+  }
+  poll(); setInterval(poll, 1500);
+})();
+</script>
 {{end}}
 </body>
 </html>

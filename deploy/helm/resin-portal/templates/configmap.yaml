@@ -11,3 +11,6 @@ data:
   TINKERACCESS_BASE_URL: {{ .Values.tinkerAccess.baseURL | quote }}
   TINKERACCESS_GET_USERS_PATH: {{ .Values.tinkerAccess.getUsersPath | quote }}
   SYNC_INTERVAL: {{ .Values.sync.interval | quote }}
+  AGENT_AUTO_UPDATE: {{ .Values.agentUpdate.auto | quote }}
+  AGENT_TARGET_VERSION: {{ .Values.agentUpdate.targetVersion | quote }}
+  AGENT_BINARY_PATH: {{ .Values.agentUpdate.binaryPath | quote }}

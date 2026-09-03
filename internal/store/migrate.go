@@ -11,9 +11,9 @@ import (
 )
 
 // Migrate runs embedded goose migrations against dsn. direction is "up",
-// "down", or "status"; "up" is what the Helm migrate Job uses. It retries the
-// initial connection for up to two minutes so a fresh install can race the
-// bundled Postgres coming online.
+// "down" (one step), "reset" (all the way down), or "status"; "up" is what the
+// Helm migrate Job uses. It retries the initial connection for up to two
+// minutes so a fresh install can race the bundled Postgres coming online.
 func Migrate(dsn, direction string) error {
 	sqlDB, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -43,6 +43,8 @@ func Migrate(dsn, direction string) error {
 		return goose.Up(sqlDB, "migrations")
 	case "down":
 		return goose.Down(sqlDB, "migrations")
+	case "reset":
+		return goose.DownTo(sqlDB, "migrations", 0)
 	case "status":
 		return goose.Status(sqlDB, "migrations")
 	default:

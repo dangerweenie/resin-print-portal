@@ -11,14 +11,16 @@ import (
 
 const printerCols = `id, slug, display_name, model, allowed_extensions,
 	safety_checklist, slack_webhook_url, api_key_hash,
-	coalesce(device_id, ''), approved, enrolled_at, last_seen_at, created_at`
+	coalesce(device_id, ''), approved, enrolled_at, last_seen_at, created_at,
+	agent_version, agent_version_at, agent_target_override, agent_update_hold`
 
 func scanPrinter(row pgx.Row) (Printer, error) {
 	var p Printer
 	err := row.Scan(&p.ID, &p.Slug, &p.DisplayName, &p.Model,
 		&p.AllowedExtensions, &p.SafetyChecklist, &p.SlackWebhookURL,
 		&p.APIKeyHash, &p.DeviceID, &p.Approved, &p.EnrolledAt, &p.LastSeenAt,
-		&p.CreatedAt)
+		&p.CreatedAt, &p.AgentVersion, &p.AgentVersionAt, &p.AgentTargetOverride,
+		&p.AgentUpdateHold)
 	return p, err
 }
 
@@ -127,6 +129,30 @@ func (s *Store) TouchPrinterSeen(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE printers SET last_seen_at=now()
 		WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute')`, id)
+	return err
+}
+
+// SetPrinterAgentVersion records the pi-agent build a Pi is running. Called
+// (from a goroutine) only when the reported version differs from what's stored,
+// so it doesn't add write traffic to every check-in.
+func (s *Store) SetPrinterAgentVersion(ctx context.Context, id int64, version string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE printers
+		   SET agent_version = $2,
+		       agent_version_at = now()
+		 WHERE id = $1 AND agent_version IS DISTINCT FROM $2`, id, version)
+	return err
+}
+
+// SetPrinterAgentUpdate sets the per-Pi self-update controls: override pins the
+// Pi to a specific version now (empty = follow the fleet default), hold keeps
+// the Pi on whatever it is running.
+func (s *Store) SetPrinterAgentUpdate(ctx context.Context, id int64, override string, hold bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE printers
+		   SET agent_target_override = $2,
+		       agent_update_hold = $3
+		 WHERE id = $1`, id, override, hold)
 	return err
 }
 

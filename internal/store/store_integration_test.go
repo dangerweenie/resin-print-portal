@@ -18,8 +18,8 @@ func testStore(t *testing.T) *store.Store {
 	if dsn == "" {
 		t.Skip("set TEST_DATABASE_URL to run store integration tests")
 	}
-	if err := store.Migrate(dsn, "down"); err != nil {
-		t.Logf("migrate down (ignored): %v", err)
+	if err := store.Migrate(dsn, "reset"); err != nil {
+		t.Logf("migrate reset (ignored): %v", err)
 	}
 	if err := store.Migrate(dsn, "up"); err != nil {
 		t.Fatalf("migrate up: %v", err)
@@ -39,7 +39,7 @@ func TestRosterSyncAndResolve(t *testing.T) {
 	res, err := st.SyncRoster(ctx, []store.RosterEntry{
 		{ID: 1, Name: "Jane Doe", Code: "111", Status: "A"},
 		{ID: 2, Name: "John Roe", Code: "222", Status: "I"},
-		{ID: 3, Name: "Sam Poe", Code: "333", Status: "S"},
+		{ID: 3, Name: "Sam Poe", Code: "deadbeef", Status: "S"}, // fob UID, lowercase hex
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +67,25 @@ func TestRosterSyncAndResolve(t *testing.T) {
 	m, byName, err = st.ResolveSlackName(ctx, "sammy")
 	if err != nil || byName || m.ID != 3 {
 		t.Fatalf("resolve sammy = %+v byName=%v err=%v", m, byName, err)
+	}
+
+	// Resolve by tapped fob UID — the Pi sends canonical uppercase hex; the
+	// store matches against members.code in whatever form it was recorded.
+	byFob, err := st.ResolveRFIDCode(ctx, "DE:AD:BE:EF") // colon form, upper
+	if err != nil || byFob.ID != 3 {
+		t.Fatalf("ResolveRFIDCode(DE:AD:BE:EF) = %+v err=%v, want member 3", byFob, err)
+	}
+	if m, err := st.ResolveRFIDCode(ctx, "DEADBEEF"); err != nil || m.ID != 3 {
+		t.Fatalf("ResolveRFIDCode(DEADBEEF) = %+v err=%v, want member 3", m, err)
+	}
+	if _, err := st.ResolveRFIDCode(ctx, "00000000"); err == nil {
+		t.Fatal("ResolveRFIDCode should ErrNotFound for an unknown UID")
+	}
+	if _, err := st.ResolveRFIDCode(ctx, "not-hex"); err == nil {
+		t.Fatal("ResolveRFIDCode should ErrNotFound for a non-hex UID")
+	}
+	if _, err := st.ResolveRFIDCode(ctx, ""); err == nil {
+		t.Fatal("ResolveRFIDCode should not match on an empty UID")
 	}
 
 	// A member dropping off the roster is deactivated, not deleted.

@@ -27,6 +27,21 @@ tinkerAccess:
 sync:
   interval: "10m"
 
+# Pi-agent fleet self-update. The portal image carries the cross-compiled
+# pi-agent binary it was built alongside; a Pi polls the portal and swaps its
+# own binary in place, never mid-print.
+agentUpdate:
+  # true: every Pi that isn't individually held converges to targetVersion.
+  # false: nothing auto-updates; an admin still triggers per-Pi updates from
+  # the Printers page ("Update now").
+  auto: false
+  # Pin the fleet to a specific version string. Blank = the portal's own build
+  # (the common case — deploy a new image, the fleet follows).
+  targetVersion: ""
+  # Where the bundled pi-agent binary lives in the image. Only change this if
+  # you build a custom image.
+  binaryPath: "/agent/pi-agent-armv6"
+
 app:
   logLevel: "info"
   adminUsername: "captain"

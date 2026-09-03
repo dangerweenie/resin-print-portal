@@ -53,9 +53,25 @@ func (s *Server) printerAuth(next http.Handler) http.Handler {
 			return
 		}
 		s.touchSeen(printer.ID)
+		if v := strings.TrimSpace(r.Header.Get("X-Agent-Version")); v != "" && v != printer.AgentVersion {
+			s.recordAgentVersion(printer.ID, v)
+		}
 		ctx := context.WithValue(r.Context(), ctxPrinter, printer)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// recordAgentVersion persists a changed pi-agent version out of band. The store
+// method only writes when the value actually differs, so this is a no-op write
+// on the common path even though we already guard on the loaded row.
+func (s *Server) recordAgentVersion(printerID int64, version string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.st.SetPrinterAgentVersion(ctx, printerID, version); err != nil {
+			s.log.Debug("record agent version failed", "printer", printerID, "err", err)
+		}
+	}()
 }
 
 func printerFrom(ctx context.Context) store.Printer {

@@ -2,12 +2,69 @@ package piagent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
 
 	"github.com/dangerweenie/resin-print-portal/internal/config"
 )
+
+// registrationCheckInterval is how often a running agent re-confirms the portal
+// still knows it.
+const registrationCheckInterval = 2 * time.Minute
+
+// MaintainRegistration makes sure the Pi is registered, now and forever:
+//
+//   - no stored credentials         -> enroll
+//   - stored credentials rejected   -> discard them and re-enroll
+//   - stored credentials still good -> nothing
+//
+// The first pass runs synchronously (so the agent starts with valid creds when
+// it can); it then keeps checking in the background so a printer that is
+// deleted, key-rotated, or lost to a wiped database heals itself without a
+// reboot. Transient errors (portal down, 5xx) never trigger a re-enroll.
+func MaintainRegistration(ctx context.Context, client *CentralClient, cfg *config.PiAgent, log *slog.Logger) error {
+	if err := ensureRegistered(ctx, client, cfg, log); err != nil {
+		return err
+	}
+	go func() {
+		t := time.NewTicker(registrationCheckInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := client.Verify(ctx); errors.Is(err, ErrCredentialsRejected) {
+					log.Warn("the portal no longer recognises this Pi — re-enrolling")
+					_ = ensureRegistered(ctx, client, cfg, log)
+				}
+			}
+		}
+	}()
+	return nil
+}
+
+func ensureRegistered(ctx context.Context, client *CentralClient, cfg *config.PiAgent, log *slog.Logger) error {
+	if !cfg.NeedsEnrollment() {
+		switch err := client.Verify(ctx); {
+		case err == nil:
+			return nil // credentials are good
+		case errors.Is(err, ErrCredentialsRejected):
+			log.Warn("stored credentials were rejected by the portal — discarding and re-enrolling", "err", err)
+			_ = os.Remove(cfg.CredsPath)
+			cfg.PrinterSlug, cfg.PrinterAPIKey = "", ""
+			client.SetCredentials("", "")
+		default:
+			// Portal unreachable / 5xx — keep the creds, carry on; the
+			// background loop will retry.
+			log.Warn("could not verify registration with the portal (keeping stored credentials)", "err", err)
+			return nil
+		}
+	}
+	return EnrollUntilSuccess(ctx, client, cfg, log)
+}
 
 // EnrollUntilSuccess self-registers the Pi with the fleet bootstrap token,
 // retrying until it works or ctx is cancelled. On success it persists the
@@ -20,7 +77,7 @@ func EnrollUntilSuccess(ctx context.Context, client *CentralClient, cfg *config.
 	if hostname == "" {
 		hostname = "printer"
 	}
-	log.Info("no credentials yet — enrolling with the central portal",
+	log.Info("enrolling with the central portal",
 		"device_id", deviceID, "hostname", hostname, "central", cfg.CentralBaseURL)
 
 	const retry = 15 * time.Second

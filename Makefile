@@ -7,6 +7,12 @@ CHART       := deploy/helm/resin-portal
 PIAGENT_OUT ?= bin/pi-agent-armv6
 TEST_DB     ?= postgres://postgres:test@localhost:55432/portal?sslmode=disable
 
+# One version string stamped into every binary. `git describe` in a checkout,
+# "dev" otherwise. The portal and the pi-agent it serves for self-updates are
+# built from the same tree, so they share this value.
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS  := -s -w -X github.com/dangerweenie/resin-print-portal/internal/buildinfo.Version=$(VERSION)
+
 .PHONY: help
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | \
@@ -14,13 +20,13 @@ help: ## Show this help
 
 .PHONY: build
 build: ## Build the portal binary
-	CGO_ENABLED=0 go build -trimpath -o bin/portal ./cmd/portal
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/portal ./cmd/portal
 
 .PHONY: pi-agent
 pi-agent: ## Cross-compile the pi-agent static binary for the Pi Zero W (armv6)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 \
-		go build -trimpath -ldflags='-s -w' -o $(PIAGENT_OUT) ./cmd/pi-agent
-	@echo "built $(PIAGENT_OUT)"
+		go build -trimpath -ldflags="$(LDFLAGS)" -o $(PIAGENT_OUT) ./cmd/pi-agent
+	@echo "built $(PIAGENT_OUT) ($(VERSION))"
 
 .PHONY: test
 test: ## Run unit tests (no database needed)
@@ -86,8 +92,8 @@ run-worker: build ## Run the roster-sync worker (needs a reachable TinkerAccess;
 	bin/portal worker
 
 .PHONY: docker
-docker: ## Build the container image
-	docker build -f build/Dockerfile -t $(IMAGE):$(TAG) .
+docker: ## Build the container image (portal + the pi-agent binary it serves)
+	docker build -f build/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) .
 
 .PHONY: helm-deps
 helm-deps: ## Fetch the chart's Bitnami postgresql dependency

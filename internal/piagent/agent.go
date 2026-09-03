@@ -7,6 +7,7 @@ package piagent
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"html/template"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,16 +33,40 @@ type GadgetWriter interface {
 	Clear(ctx context.Context) error
 }
 
-// Agent is the Pi-side HTTP handler.
+// FobScan is the current tapped fob, if any.
+type FobScan struct {
+	Code string
+}
+
+// ScanSource is the slice of *rfid.Reader the agent uses.
+type ScanSource interface {
+	// CurrentCode returns the code of the fob currently held at the reader
+	// (within its TTL), and whether there is one.
+	CurrentCode() (string, bool)
+	// Clear forgets the current tap.
+	Clear()
+}
+
+// Agent is the Pi-side HTTP handler. Identity is always a fob tap.
 type Agent struct {
 	central *CentralClient
 	gadget  GadgetWriter
+	scanner ScanSource
 	log     *slog.Logger
+
+	scanMu    sync.Mutex
+	scanCache scanCheck // last /check result, keyed by code, to avoid re-checking a held fob
+}
+
+type scanCheck struct {
+	code   string
+	result CheckResult
+	at     time.Time
 }
 
 // New builds an Agent.
-func New(central *CentralClient, g GadgetWriter, log *slog.Logger) *Agent {
-	return &Agent{central: central, gadget: g, log: log}
+func New(central *CentralClient, g GadgetWriter, scanner ScanSource, log *slog.Logger) *Agent {
+	return &Agent{central: central, gadget: g, scanner: scanner, log: log}
 }
 
 // Handler returns the routed HTTP handler.
@@ -48,9 +74,59 @@ func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/", a.handleIndex)
+	mux.HandleFunc("/scan", a.handleScan)
 	mux.HandleFunc("/submit", a.handleSubmit)
 	mux.HandleFunc("/finish", a.handleFinish)
 	return mux
+}
+
+// GET /scan — the upload page polls this to show who just tapped. The portal
+// call (and its decision_log row) happens once per distinct fob, not once per
+// poll: a held fob is answered from cache.
+func (a *Agent) handleScan(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	code, ok := a.scanner.CurrentCode()
+	if !ok {
+		_, _ = w.Write([]byte(`{"scanned":false}`))
+		return
+	}
+
+	res, cached, err := a.checkFob(r.Context(), code)
+	if err != nil {
+		a.log.Warn("fob check failed", "err", err)
+		_, _ = w.Write([]byte(`{"scanned":true,"allowed":false,"reason":"portal_unreachable"}`))
+		return
+	}
+	if !cached {
+		a.log.Info("fob tap", "code", code, "allowed", res.Allowed,
+			"member", res.MemberName, "reason", res.Reason)
+	}
+	writeJSON(w, map[string]any{
+		"scanned":     true,
+		"allowed":     res.Allowed,
+		"reason":      res.Reason,
+		"member_name": res.MemberName,
+	})
+}
+
+// checkFob resolves a fob against the portal, caching the result per code for a
+// short window so a fob held at the reader isn't re-checked (and re-logged) on
+// every 1.5s poll.
+func (a *Agent) checkFob(ctx context.Context, code string) (res CheckResult, cached bool, err error) {
+	a.scanMu.Lock()
+	c := a.scanCache
+	a.scanMu.Unlock()
+	if c.code == code && time.Since(c.at) < 30*time.Second {
+		return c.result, true, nil
+	}
+	res, err = a.central.CheckFob(ctx, code)
+	if err != nil {
+		return CheckResult{}, false, err
+	}
+	a.scanMu.Lock()
+	a.scanCache = scanCheck{code: code, result: res, at: time.Now()}
+	a.scanMu.Unlock()
+	return res, false, nil
 }
 
 type pageData struct {
@@ -119,9 +195,11 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	slackName := r.FormValue("slack_name")
-	if slackName == "" {
-		a.render(w, r, pageData{Error: "Enter your Tinkermill Slack name."})
+	// Identity is the fob the agent read itself — the browser never handles the
+	// code, and there is no other way to identify.
+	fobCode, ok := a.scanner.CurrentCode()
+	if !ok {
+		a.render(w, r, pageData{Error: "Tap your Tinkermill fob on the reader, then submit."})
 		return
 	}
 
@@ -165,7 +243,7 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		checked[i] = r.FormValue("check_"+strconv.Itoa(i)) != ""
 	}
 
-	res, err := a.central.SubmitPrint(r.Context(), slackName, origName, stagedPath, checked)
+	res, err := a.central.SubmitPrint(r.Context(), fobCode, origName, stagedPath, checked)
 	if err != nil {
 		a.log.Error("submit to central failed", "err", err)
 		a.render(w, r, pageData{Error: "Couldn't reach the print portal. Nothing was sent to the printer."})
@@ -183,6 +261,9 @@ func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.central.JobStarted(r.Context(), res.JobID); err != nil {
 		a.log.Warn("job started callback failed", "err", err, "job", res.JobID)
+	}
+	if a.scanner != nil {
+		a.scanner.Clear() // next member starts fresh
 	}
 
 	msg := "Your file is on the printer. Start the print from the printer's screen."
@@ -229,6 +310,8 @@ func denyMessage(reason string) string {
 		return "Please confirm every item on the safety checklist before submitting."
 	case "printer_pending_approval":
 		return "This printer is still waiting for a makerspace admin to approve it in the portal."
+	case "unknown_fob":
+		return "That fob isn't linked to an active Tinkermill member. Check with the front desk that your membership and fob are current."
 	default:
 		return "The portal declined this print (" + reason + ")."
 	}
@@ -242,6 +325,10 @@ func orFirst(a, b string) string {
 }
 
 func urlEncode(s string) string { return url.QueryEscape(s) }
+
+func writeJSON(w http.ResponseWriter, v any) {
+	_ = json.NewEncoder(w).Encode(v)
+}
 
 // sanitizeFilename strips any path and keeps only characters safe on a FAT32
 // volume and a picky printer's file browser. The central service applies the

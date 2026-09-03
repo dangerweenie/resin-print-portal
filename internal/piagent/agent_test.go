@@ -21,40 +21,6 @@ type fakeGadget struct {
 func (f *fakeGadget) Write(_ context.Context, src string) error { f.wrote = src; return f.err }
 func (f *fakeGadget) Clear(context.Context) error               { f.cleared = true; return f.err }
 
-// fakeCentral stands in for the portal's Pi-facing API.
-func fakeCentral(t *testing.T, approve bool, reason string) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/printers/resin/config", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"slug":"resin","display_name":"Resin","approved":true,"safety_checklist":["vat ok"]}`))
-	})
-	mux.HandleFunc("/api/v1/printers/resin/current-job", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"current_job":null}`))
-	})
-	mux.HandleFunc("/api/v1/printers/resin/print-requests", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseMultipartForm(1 << 20); err != nil {
-			t.Errorf("central: parse form: %v", err)
-		}
-		if r.FormValue("slack_name") == "" {
-			t.Error("central: missing slack_name")
-		}
-		if _, _, err := r.FormFile("file"); err != nil {
-			t.Errorf("central: missing file: %v", err)
-		}
-		if approve {
-			_, _ = w.Write([]byte(`{"approved":true,"job_id":42,"eta_seconds":3600,"eta_exact":true}`))
-		} else {
-			_, _ = w.Write([]byte(`{"approved":false,"reason":"` + reason + `"}`))
-		}
-	})
-	mux.HandleFunc("/api/v1/printers/resin/jobs/42/started", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 func multipartBody(t *testing.T, fields map[string]string, fileField, fileName, fileBody string) (*bytes.Buffer, string) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -73,46 +39,39 @@ func multipartBody(t *testing.T, fields map[string]string, fileField, fileName, 
 	return &buf, mw.FormDataContentType()
 }
 
-func newAgent(t *testing.T, central *httptest.Server, g GadgetWriter) http.Handler {
+// deniedFobCentral answers every /check and /print-requests with a denial.
+func deniedFobCentral(t *testing.T, reason string) *httptest.Server {
 	t.Helper()
-	c := NewCentralClient(central.URL, "resin", "key")
-	return New(c, g, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/printers/resin/config", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"slug":"resin","approved":true,"safety_checklist":["vat ok"]}`))
+	})
+	mux.HandleFunc("/api/v1/printers/resin/current-job", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"current_job":null}`))
+	})
+	deny := []byte(`{"allowed":false,"approved":false,"reason":"` + reason + `"}`)
+	mux.HandleFunc("/api/v1/printers/resin/check", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(deny) })
+	mux.HandleFunc("/api/v1/printers/resin/print-requests", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		_, _ = w.Write(deny)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
 }
 
-func TestSubmitApprovedWritesGadget(t *testing.T) {
-	central := fakeCentral(t, true, "")
+func TestSubmitDeniedFobDoesNotWriteGadget(t *testing.T) {
+	srv := deniedFobCentral(t, "not_certified")
 	g := &fakeGadget{}
-	h := newAgent(t, central, g)
+	sc := &fakeScanner{}
+	sc.set("DEADBEEF")
+	a := New(NewCentralClient(srv.URL, "resin", "k"), g, sc, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	body, ct := multipartBody(t, map[string]string{
-		"slack_name": "jane doe", "check_0": "1",
-	}, "file", "job.pwsz", "PWSZBYTES")
+	body, ct := multipartBody(t, map[string]string{"check_0": "1"}, "file", "job.goo", "GOO")
 	req := httptest.NewRequest(http.MethodPost, "/submit", body)
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302 (body: %s)", rec.Code, rec.Body.String())
-	}
-	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "msg=") {
-		t.Errorf("redirect Location = %q, want a success msg", loc)
-	}
-	if g.wrote == "" {
-		t.Error("gadget.Write was not called on an approved print")
-	}
-}
-
-func TestSubmitDeniedDoesNotWriteGadget(t *testing.T) {
-	central := fakeCentral(t, false, "not_certified")
-	g := &fakeGadget{}
-	h := newAgent(t, central, g)
-
-	body, ct := multipartBody(t, map[string]string{"slack_name": "jane doe"}, "file", "job.pwsz", "X")
-	req := httptest.NewRequest(http.MethodPost, "/submit", body)
-	req.Header.Set("Content-Type", ct)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	a.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (re-rendered form)", rec.Code)
@@ -127,8 +86,8 @@ func TestSubmitDeniedDoesNotWriteGadget(t *testing.T) {
 
 func TestDenyMessageKnownReasons(t *testing.T) {
 	for _, r := range []string{
-		"unknown_slack_name", "ambiguous_name", "membership_inactive",
-		"not_certified", "extension_not_allowed", "checklist_incomplete",
+		"unknown_fob", "not_certified", "membership_inactive",
+		"extension_not_allowed", "checklist_incomplete", "printer_pending_approval",
 	} {
 		if m := denyMessage(r); m == "" || strings.Contains(m, "(") {
 			t.Errorf("denyMessage(%q) = %q, want a plain-English sentence", r, m)

@@ -161,6 +161,21 @@ for this printer in the admin UI is all that's needed — no per-Pi account
 creation. Membership active/inactive comes from TinkerAccess automatically
 via the sync worker.
 
+## 4. RFID fob reader (required — every Pi)
+
+Identity is the fob and only the fob. There is no name-entry mode.
+
+- **Wire an MFRC522** (13.56 MHz, SPI) to the header: `SDA→GPIO8, SCK→GPIO11,
+  MOSI→GPIO10, MISO→GPIO9, RST→GPIO25, 3.3 V, GND`. 3.3 V only. (The Zero W
+  header is unpopulated — solder one on.) 125 kHz door fobs won't read.
+- Nothing to configure. `provision-boot.sh` sets `dtparam=spi=on`; the agent
+  reads the reader on fixed pins and sends the UID as canonical hex; the
+  **portal** matches it against `members.code` in every format. The agent
+  **won't start** without a working reader.
+- Every tap hits the portal's `/check` once and lands in `decision_log` —
+  visible in the admin **Log**. That is the tap record; the Pi keeps nothing.
+- `sudo pi-agent -probe` prints what the reader sees — a wiring check only.
+
 ## Redeploying the agent (not a fresh flash)
 Once a Pi is provisioned, pushing an agent update:
 ```bash

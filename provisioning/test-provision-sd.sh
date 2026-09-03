@@ -71,7 +71,7 @@ check "provision-boot.sh copied to boot"  "[ -f '$BOOT/provision-boot.sh' ]"
 # =======================================================================
 echo "### 2. staged pi-agent payload"
 P="$BOOT/payload/agent"
-for f in pi-agent-armv6 usb-refresh.sh resin-pi-agent.service install.sh config.example.env resin-pi-agent.env; do
+for f in pi-agent-armv6 usb-refresh.sh agent-guard.sh resin-pi-agent.service install.sh config.example.env resin-pi-agent.env; do
     check "payload/agent/$f staged" "[ -f '$P/$f' ]"
 done
 check "piusb-gadget.service staged" "[ -f '$BOOT/payload/piusb-gadget.service' ]"
@@ -80,6 +80,7 @@ check "no leftover printer-upload payload" "[ ! -e '$BOOT/payload/printer-upload
 check "staged env has the portal URL"    "grep -q '^CENTRAL_BASE_URL=https://portal.example.org' '$P/resin-pi-agent.env'"
 check "staged env carries the enroll token when given" "grep -q '^ENROLL_TOKEN=fleet-tok-xyz' '$P/resin-pi-agent.env'"
 check "staged env has NO per-Pi slug/key" "! grep -qE '^PRINTER_(SLUG|API_KEY)=' '$P/resin-pi-agent.env'"
+check "staged env has no RFID knob (fob-only is not configurable)" "! grep -qi 'RFID' '$P/resin-pi-agent.env'"
 
 # The enroll token is optional; --central-url is not.
 BOOT_NT="$TMP/bootfs-notoken"; mkdir -p "$BOOT_NT"; : > "$BOOT_NT/config.txt"; : > "$BOOT_NT/cmdline.txt"
@@ -117,6 +118,7 @@ IRC=$?
 check "install.sh dry run exits 0" "[ $IRC -eq 0 ]"
 check "  -> /usr/local/bin/pi-agent"       "[ -x '$DEST/usr/local/bin/pi-agent' ]"
 check "  -> /usr/local/bin/usb-refresh.sh" "[ -x '$DEST/usr/local/bin/usb-refresh.sh' ]"
+check "  -> /usr/local/bin/agent-guard.sh" "[ -x '$DEST/usr/local/bin/agent-guard.sh' ]"
 check "  -> /etc/systemd/system/resin-pi-agent.service" \
       "[ -f '$DEST/etc/systemd/system/resin-pi-agent.service' ]"
 check "  -> /etc/resin-pi-agent.env seeded" "[ -f '$DEST/etc/resin-pi-agent.env' ]"
@@ -146,12 +148,12 @@ check "did not half-stage a payload" "[ ! -d '$BOOT2/payload/agent' ]"
 
 # =======================================================================
 echo "### 6. static checks"
-for s in provisioning/provision-sd.sh provisioning/provision-boot.sh pi/install.sh usb-refresh.sh; do
+for s in provisioning/provision-sd.sh provisioning/provision-boot.sh pi/install.sh pi/agent-guard.sh usb-refresh.sh; do
     check "bash -n $s" "bash -n '$REPO/$s'"
 done
 if command -v shellcheck >/dev/null 2>&1; then
     check "shellcheck (provisioning + install)" \
-      "shellcheck -S warning '$REPO/provisioning/provision-sd.sh' '$REPO/provisioning/provision-boot.sh' '$REPO/pi/install.sh' '$REPO/usb-refresh.sh'"
+      "shellcheck -S warning '$REPO/provisioning/provision-sd.sh' '$REPO/provisioning/provision-boot.sh' '$REPO/pi/install.sh' '$REPO/pi/agent-guard.sh' '$REPO/usb-refresh.sh'"
 else
     echo "skip: shellcheck not installed"
 fi

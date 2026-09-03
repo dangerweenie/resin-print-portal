@@ -52,6 +52,8 @@ internal/
   worker/            the roster-sync loop
   piagent/           upload page + central client + gadget write
   gadget/            wraps usb-refresh.sh
+  rfid/              MFRC522 (SPI) fob reader — pure Go via periph.io
+  fobcode/           UID → all string forms, for format-agnostic matching
   slack/             best-effort Incoming Webhook poster
 db/migrations/       goose SQL migrations (embedded in the binary)
 web/                 admin-UI templates + static assets (embedded)
@@ -162,25 +164,71 @@ A freshly-flashed Pi self-registers — no per-Pi config. `provisioning/` +
 setup unattended; set `CENTRAL_URL` + `ENROLL_TOKEN` once in
 `provisioning/fleet.env`.
 
-To push an **agent update** to an already-running Pi:
+### Fleet version tracking + self-update
+
+Every pi-agent binary is stamped with a version (`git describe`, shown as
+`pi-agent starting version=…` in its logs) and reports it to the portal on
+every check-in via an `X-Agent-Version` header. **Printers → Pending / Active**
+shows each Pi's running version, when it last checked in, and a *behind* badge
+when it isn't on the portal's own build.
+
+The portal image carries the cross-compiled pi-agent it was built alongside and
+can hand it out for an in-place self-update:
+
+- **Automatic**: `--set agentUpdate.auto=true` (env `AGENT_AUTO_UPDATE=true`).
+  Every Pi that isn't individually held converges to the portal's build on its
+  next check-in (~5 min), **never mid-print**. Deploy a new portal image → the
+  fleet follows.
+- **Per-Pi**, from the Printers page, regardless of the global toggle:
+  **Update now** pins a Pi to the current build; **Hold** freezes a Pi on what
+  it's running; **Resume / Unpin** clears either.
+
+The Pi downloads the binary (printer bearer auth), verifies its SHA-256,
+swaps it in place keeping `pi-agent.prev`, and exits cleanly so systemd
+(`Restart=always`) starts the new one. `agent-guard.sh` (an `ExecStartPre`)
+rolls back to `pi-agent.prev` if a bad build crash-loops. All of this state
+lives in `/var/lib/resin-pi-agent`, never on the boot partition. After
+`maxUpdateAttempts` failed tries at the same version the Pi gives up and shows
+as *behind* for a human to look at.
+
+To push an agent update **out of band** (no portal, or a Pi with no route to
+it):
 
 ```bash
 make pi-agent
-scp bin/pi-agent-armv6 usb-refresh.sh captain@<pi>.lan:~/
+scp bin/pi-agent-armv6 usb-refresh.sh pi/agent-guard.sh captain@<pi>.lan:~/
 ssh captain@<pi>.lan 'sudo install -m0755 ~/pi-agent-armv6 /usr/local/bin/pi-agent && \
     sudo install -m0755 ~/usb-refresh.sh /usr/local/bin/usb-refresh.sh && \
+    sudo install -m0755 ~/agent-guard.sh /usr/local/bin/agent-guard.sh && \
     sudo systemctl restart resin-pi-agent'
 ```
 
+### Identity: RFID fob only
+
+Every Pi is fob-only. There is no name-entry mode and no switch for it. Wire an
+MFRC522 (13.56 MHz) to the SPI header — `SDA→GPIO8, SCK→GPIO11, MOSI→GPIO10,
+MISO→GPIO9, RST→GPIO25, 3.3V, GND` — and that's all: the agent reads it on fixed
+pins, the upload page is tap-only, the UID never touches the browser, and the
+**portal** matches the UID against `members.code` in every format it could have
+been recorded as (hex, colon-hex, decimal either endianness). The agent **won't
+start** if the reader isn't working.
+
+Every tap is checked against the portal once (`/check` → a `decision_log` row),
+so who tapped what and when is queryable in the admin **Log** — the tap audit
+trail lives centrally, not on the Pi. `sudo pi-agent -probe` prints what the
+reader sees, a wiring diagnostic only.
+
 ## Bringing a printer online
 
-1. Deploy the portal; confirm the worker logs a roster sync.
+1. Deploy the portal; confirm the worker logs a roster sync (`members.code`
+   comes from TinkerAccess — nothing to link for fobs).
 2. Set `CENTRAL_URL` in `provisioning/fleet.env`, flash a card
-   (`provisioning/provision-sd.sh`), plug the Pi into the printer.
+   (`provisioning/provision-sd.sh`) — the image has an MFRC522 wired — and plug
+   the Pi into the printer.
 3. Admin UI → **Printers → Pending** — click **Approve** on the Pi that just
    showed up (it's keyed by hostname). This approval is the security gate.
-4. **Members**: link Slack display names. **Certifications**: certify them for
-   that printer.
+4. **Certifications**: certify members for that printer.
 5. *(optional)* Edit the printer to set its model + allowed extensions — the
    default is "accept anything" with the standard safety checklist.
-6. Run `hw-tests/` against the Pi + printer to confirm end-to-end.
+6. Tap a certified member's fob at the Pi and confirm the page shows their name;
+   run `hw-tests/` to confirm the gadget path end-to-end.

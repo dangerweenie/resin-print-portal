@@ -27,6 +27,11 @@ type Portal struct {
 	StatusAPIKey  string // bearer key for GET /api/v1/status (org-wide read)
 	EnrollToken   string // fleet bootstrap secret for POST /api/v1/enroll; blank disables it
 
+	// Pi-agent fleet self-update (server only).
+	AgentAutoUpdate    bool   // AGENT_AUTO_UPDATE: converge every non-held Pi to the target version
+	AgentTargetVersion string // AGENT_TARGET_VERSION: pin the fleet to this version string; "" = the portal's own build
+	AgentBinaryPath    string // AGENT_BINARY_PATH: the cross-compiled pi-agent binary this image serves for updates
+
 	// worker only.
 	SyncInterval          time.Duration
 	TinkerAccessBaseURL   string // e.g. http://tinker-access.default.svc:3000
@@ -45,6 +50,9 @@ func LoadPortal(subcommand string) (*Portal, error) {
 		AdminPassword:         env("ADMIN_PASSWORD", ""),
 		StatusAPIKey:          env("STATUS_API_KEY", ""),
 		EnrollToken:           env("ENROLL_TOKEN", ""),
+		AgentAutoUpdate:       boolEnv("AGENT_AUTO_UPDATE", false),
+		AgentTargetVersion:    strings.TrimSpace(env("AGENT_TARGET_VERSION", "")),
+		AgentBinaryPath:       env("AGENT_BINARY_PATH", "/agent/pi-agent-armv6"),
 		TinkerAccessBaseURL:   strings.TrimRight(env("TINKERACCESS_BASE_URL", ""), "/"),
 		TinkerAccessUsersPath: env("TINKERACCESS_GET_USERS_PATH", ""),
 		TinkerAccessWASMPath:  env("TINKERACCESS_WASM_PATH", ""),
@@ -175,6 +183,20 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// boolEnv reads a boolean-ish env var: 1/true/yes/on (any case) => true.
+func boolEnv(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseDuration accepts Go durations ("10m", "1h30m") and also a bare integer

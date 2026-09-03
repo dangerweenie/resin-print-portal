@@ -110,7 +110,10 @@ func (s *Server) handleSlackUnlink(w http.ResponseWriter, r *http.Request) {
 
 type printerRow struct {
 	store.Printer
-	LastSeen string
+	LastSeen     string
+	AgentVersion string // "unknown" until the Pi reports in
+	UpdateState  string // "up to date" | "update pending" | "held" | "pinned <v>" | "auto" | "—"
+	Behind       bool   // running something other than the portal's build
 }
 
 func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
@@ -120,9 +123,16 @@ func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
+	portalVer := s.portalVersion()
 	var pending, active []printerRow
 	for _, p := range printers {
-		row := printerRow{Printer: p, LastSeen: humanAgo(p.LastSeenAt, now)}
+		row := printerRow{
+			Printer:      p,
+			LastSeen:     humanAgo(p.LastSeenAt, now),
+			AgentVersion: orDefault(p.AgentVersion, "unknown"),
+			UpdateState:  s.agentUpdateState(p),
+			Behind:       p.AgentVersion != "" && p.AgentVersion != portalVer,
+		}
 		if p.Approved {
 			active = append(active, row)
 		} else {
@@ -130,10 +140,34 @@ func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.renderPage(w, "printers.html", s.pageData(r, map[string]any{
-		"Pending": pending,
-		"Active":  active,
-		"NewKey":  r.URL.Query().Get("key"), // shown once after create/rotate
+		"Pending":       pending,
+		"Active":        active,
+		"NewKey":        r.URL.Query().Get("key"), // shown once after create/rotate
+		"PortalVersion": portalVer,
+		"AutoUpdate":    s.cfg.AgentAutoUpdate,
+		"CanServe":      s.agentBin.OK,
 	}))
+}
+
+// agentUpdateState is a short human label for how a Pi's version is managed.
+func (s *Server) agentUpdateState(p store.Printer) string {
+	switch {
+	case p.AgentTargetOverride != "":
+		if p.AgentVersion == p.AgentTargetOverride {
+			return "up to date"
+		}
+		return "update pending"
+	case p.AgentUpdateHold:
+		return "held"
+	case s.cfg.AgentAutoUpdate:
+		target := s.effectiveAgentTarget(p)
+		if p.AgentVersion != "" && p.AgentVersion == target {
+			return "up to date"
+		}
+		return "auto"
+	default:
+		return "—"
+	}
 }
 
 // humanAgo renders a *time.Time as "just now" / "3m ago" / "2h ago" / "5d ago",

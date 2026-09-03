@@ -17,10 +17,11 @@ import (
 // Any unimplemented method panics via the embedded nil interface.
 type fakeStore struct {
 	DataStore
-	printer   store.Printer
-	resolve   func(norm string) (store.Member, bool, error)
-	certified bool
-	logged    []store.DecisionLogEntry
+	printer    store.Printer
+	resolve    func(norm string) (store.Member, bool, error)
+	resolveFob func(code string) (store.Member, error)
+	certified  bool
+	logged     []store.DecisionLogEntry
 }
 
 func (f *fakeStore) GetPrinterByKeyHash(context.Context, string) (store.Printer, error) {
@@ -29,6 +30,12 @@ func (f *fakeStore) GetPrinterByKeyHash(context.Context, string) (store.Printer,
 func (f *fakeStore) ResolveSlackName(_ context.Context, norm string) (store.Member, bool, error) {
 	return f.resolve(norm)
 }
+func (f *fakeStore) ResolveRFIDCode(_ context.Context, code string) (store.Member, error) {
+	if f.resolveFob == nil {
+		return store.Member{}, store.ErrNotFound
+	}
+	return f.resolveFob(code)
+}
 func (f *fakeStore) IsCertified(context.Context, int64, int64) (bool, error) {
 	return f.certified, nil
 }
@@ -36,7 +43,9 @@ func (f *fakeStore) LogDecision(_ context.Context, e store.DecisionLogEntry) err
 	f.logged = append(f.logged, e)
 	return nil
 }
-func (f *fakeStore) TouchPrinterSeen(context.Context, int64) error { return nil }
+func (f *fakeStore) TouchPrinterSeen(context.Context, int64) error                    { return nil }
+func (f *fakeStore) SetPrinterAgentVersion(context.Context, int64, string) error      { return nil }
+func (f *fakeStore) SetPrinterAgentUpdate(context.Context, int64, string, bool) error { return nil }
 
 func newTestServer(t *testing.T, fs *fakeStore) *Server {
 	t.Helper()
@@ -129,6 +138,67 @@ func TestCheckDecisionMatrix(t *testing.T) {
 			}
 			if len(fs.logged) != 1 || fs.logged[0].Outcome != tc.wantOutcome {
 				t.Errorf("decision_log = %+v, want one entry outcome=%q", fs.logged, tc.wantOutcome)
+			}
+		})
+	}
+}
+
+func TestCheckByFob(t *testing.T) {
+	printer := store.Printer{ID: 5, Slug: "resin", Approved: true}
+
+	tests := []struct {
+		name        string
+		fob         func(string) (store.Member, error)
+		certified   bool
+		wantAllowed bool
+		wantReason  string
+	}{
+		{
+			name:        "known certified fob",
+			fob:         func(string) (store.Member, error) { return member(1, true), nil },
+			certified:   true,
+			wantAllowed: true,
+		},
+		{
+			name:       "unknown fob",
+			fob:        func(string) (store.Member, error) { return store.Member{}, store.ErrNotFound },
+			wantReason: ReasonUnknownFob,
+		},
+		{
+			name:       "inactive membership",
+			fob:        func(string) (store.Member, error) { return member(1, false), nil },
+			certified:  true,
+			wantReason: ReasonMembershipInactive,
+		},
+		{
+			name:       "not certified",
+			fob:        func(string) (store.Member, error) { return member(1, true), nil },
+			certified:  false,
+			wantReason: ReasonNotCertified,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &fakeStore{printer: printer, resolveFob: tc.fob, certified: tc.certified,
+				resolve: func(string) (store.Member, bool, error) { return store.Member{}, false, store.ErrNotFound }}
+			s := newTestServer(t, fs)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/printers/resin/check",
+				strings.NewReader(`{"rfid_code":"A1B2C3D4"}`))
+			req.Header.Set("Authorization", "Bearer tok")
+			rec := httptest.NewRecorder()
+			s.Router().ServeHTTP(rec, req)
+
+			var resp struct {
+				Allowed bool   `json:"allowed"`
+				Reason  string `json:"reason"`
+			}
+			_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+			if resp.Allowed != tc.wantAllowed || resp.Reason != tc.wantReason {
+				t.Errorf("allowed=%v reason=%q, want allowed=%v reason=%q", resp.Allowed, resp.Reason, tc.wantAllowed, tc.wantReason)
+			}
+			if len(fs.logged) != 1 || fs.logged[0].SlackNameUsed != "fob:A1B2C3D4" {
+				t.Errorf("decision_log identifier = %q, want fob:A1B2C3D4", fs.logged[0].SlackNameUsed)
 			}
 		})
 	}

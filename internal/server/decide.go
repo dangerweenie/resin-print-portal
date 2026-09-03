@@ -18,6 +18,7 @@ const (
 	ReasonExtensionBlocked   = "extension_not_allowed"
 	ReasonChecklist          = "checklist_incomplete"
 	ReasonPendingApproval    = "printer_pending_approval"
+	ReasonUnknownFob         = "unknown_fob"
 )
 
 // Outcome codes for decision_log.outcome.
@@ -87,6 +88,41 @@ func (s *Server) decideIdentity(ctx context.Context, printerID int64, slackNameR
 		outcome = OutcomeApprovedByName
 	}
 	return Decision{Allowed: true, Outcome: outcome, Member: &member}, nil
+}
+
+// decideByFob resolves an RFID badge code to a member and checks membership +
+// certification. Same shape as decideIdentity, no name-match fallback.
+func (s *Server) decideByFob(ctx context.Context, printerID int64, code string) (Decision, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return denied(ReasonUnknownFob, nil), nil
+	}
+	member, err := s.st.ResolveRFIDCode(ctx, code)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return denied(ReasonUnknownFob, nil), nil
+	case err != nil:
+		return Decision{}, err
+	}
+	if !member.Active {
+		return denied(ReasonMembershipInactive, &member), nil
+	}
+	certified, err := s.st.IsCertified(ctx, member.ID, printerID)
+	if err != nil {
+		return Decision{}, err
+	}
+	if !certified {
+		return denied(ReasonNotCertified, &member), nil
+	}
+	return Decision{Allowed: true, Outcome: OutcomeApproved, Member: &member}, nil
+}
+
+// decide picks the right resolver: RFID code if present, else Slack name.
+func (s *Server) decide(ctx context.Context, printerID int64, slackName, fobCode string) (Decision, error) {
+	if strings.TrimSpace(fobCode) != "" {
+		return s.decideByFob(ctx, printerID, fobCode)
+	}
+	return s.decideIdentity(ctx, printerID, slackName)
 }
 
 // extensionAllowed reports whether filename's extension passes the printer's

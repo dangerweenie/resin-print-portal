@@ -2,6 +2,13 @@
 {{define "content"}}
 <h1>Printers</h1>
 
+<p class="muted">
+  Portal build <code>{{.PortalVersion}}</code> —
+  fleet auto-update is <strong>{{if .AutoUpdate}}on{{else}}off{{end}}</strong>{{if not .CanServe}},
+  and this build has no bundled pi-agent binary to hand out (updates can't run){{end}}.
+  A Pi picks up a version change on its next check-in (within ~5&nbsp;min), never mid-print.
+</p>
+
 {{if .NewKey}}
 <div class="flash ok">
   New API key for the Pi (shown once — copy it now):<br>
@@ -14,13 +21,14 @@
 <p class="muted">A Pi self-registered with the fleet enrollment token. Approve it
 once and it's live — nothing to configure on the Pi.</p>
 <table>
-  <thead><tr><th>Name</th><th>Slug</th><th>Device</th><th>Enrolled</th><th>Last seen</th><th></th></tr></thead>
+  <thead><tr><th>Name</th><th>Slug</th><th>Device</th><th>Agent</th><th>Enrolled</th><th>Last seen</th><th></th></tr></thead>
   <tbody>
   {{range .Pending}}
     <tr>
       <td>{{.DisplayName}}</td>
       <td><code>{{.Slug}}</code></td>
       <td><code>{{if .DeviceID}}{{.DeviceID}}{{else}}—{{end}}</code></td>
+      <td><code>{{.AgentVersion}}</code></td>
       <td>{{tsp .EnrolledAt}}</td>
       <td>{{.LastSeen}}</td>
       <td>
@@ -40,7 +48,7 @@ once and it's live — nothing to configure on the Pi.</p>
 
 <h2>Active printers</h2>
 <table>
-  <thead><tr><th>Slug</th><th>Name</th><th>Model</th><th>Extensions</th><th>Last seen</th><th>Slack</th><th></th></tr></thead>
+  <thead><tr><th>Slug</th><th>Name</th><th>Model</th><th>Extensions</th><th>Last seen</th><th>Agent</th><th>Slack</th><th></th></tr></thead>
   <tbody>
   {{range .Active}}
     <tr>
@@ -49,9 +57,26 @@ once and it's live — nothing to configure on the Pi.</p>
       <td>{{if .Model}}{{.Model}}{{else}}<span class="muted">—</span>{{end}}</td>
       <td>{{range .AllowedExtensions}}<code>{{.}}</code> {{else}}<span class="muted">any</span>{{end}}</td>
       <td>{{.LastSeen}}</td>
+      <td>
+        <code>{{.AgentVersion}}</code>
+        {{if .Behind}}<span class="flash err" style="padding:0 .3em">behind</span>{{end}}
+        <br><span class="muted">{{.UpdateState}}</span>
+      </td>
       <td>{{if .SlackWebhookURL}}on{{else}}<span class="muted">off</span>{{end}}</td>
       <td>
         <a href="/admin/printers/{{.ID}}">Edit</a>
+        <form class="inline" method="post" action="/admin/printers/{{.ID}}/agent-update">
+          {{if .AgentUpdateHold}}
+            <input type="hidden" name="action" value="clear">
+            <button class="secondary" type="submit">Resume updates</button>
+          {{else if .AgentTargetOverride}}
+            <input type="hidden" name="action" value="clear">
+            <button class="secondary" type="submit">Unpin</button>
+          {{else}}
+            <button name="action" value="now" type="submit">Update now</button>
+            <button class="secondary" name="action" value="hold" type="submit">Hold</button>
+          {{end}}
+        </form>
         <form class="inline" method="post" action="/admin/printers/{{.ID}}/rotate-key"
               onsubmit="return confirm('Rotate the API key? A hand-configured Pi must be updated; a self-enrolled Pi re-enrolls on its own.')">
           <button class="secondary" type="submit">Rotate key</button>
@@ -63,7 +88,7 @@ once and it's live — nothing to configure on the Pi.</p>
       </td>
     </tr>
   {{else}}
-    <tr><td colspan="7" class="muted">No active printers yet.</td></tr>
+    <tr><td colspan="8" class="muted">No active printers yet.</td></tr>
   {{end}}
   </tbody>
 </table>

@@ -32,11 +32,12 @@ func (s *Server) handlePrinterConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/v1/printers/{slug}/check  body: {"slack_name": "..."}
+// POST /api/v1/printers/{slug}/check  body: {"slack_name": "..."} or {"rfid_code": "..."}
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	p := printerFrom(r.Context())
 	var body struct {
 		SlackName string `json:"slack_name"`
+		RFIDCode  string `json:"rfid_code"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
@@ -45,17 +46,17 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	if !p.Approved {
 		d := denied(ReasonPendingApproval, nil)
-		s.logDecision(r, &p.ID, d, "")
+		s.logDecision(r, &p.ID, d, "", identifierOf(body.SlackName, body.RFIDCode))
 		s.writeJSON(w, http.StatusOK, map[string]any{"allowed": false, "reason": d.Reason})
 		return
 	}
 
-	d, err := s.decideIdentity(r.Context(), p.ID, body.SlackName)
+	d, err := s.decide(r.Context(), p.ID, body.SlackName, body.RFIDCode)
 	if err != nil {
-		s.serverError(w, err, "check decideIdentity")
+		s.serverError(w, err, "check decide")
 		return
 	}
-	s.logDecision(r, &p.ID, d, "")
+	s.logDecision(r, &p.ID, d, "", identifierOf(body.SlackName, body.RFIDCode))
 
 	resp := map[string]any{"allowed": d.Allowed, "reason": d.Reason}
 	if d.Member != nil {
@@ -82,23 +83,25 @@ func (s *Server) handlePrintRequest(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	slackName := r.FormValue("slack_name")
+	fobCode := r.FormValue("rfid_code")
+	who := identifierOf(slackName, fobCode)
 	filename := sanitizeFilename(r.FormValue("filename"))
 
 	if !p.Approved {
 		d := denied(ReasonPendingApproval, nil)
-		s.logDecision(r, &p.ID, d, filename)
+		s.logDecision(r, &p.ID, d, filename, who)
 		s.writeJSON(w, http.StatusOK, printDenied(d.Reason))
 		return
 	}
 
 	// 1. Identity / membership / certification.
-	d, err := s.decideIdentity(r.Context(), p.ID, slackName)
+	d, err := s.decide(r.Context(), p.ID, slackName, fobCode)
 	if err != nil {
-		s.serverError(w, err, "print-request decideIdentity")
+		s.serverError(w, err, "print-request decide")
 		return
 	}
 	if !d.Allowed {
-		s.logDecision(r, &p.ID, d, filename)
+		s.logDecision(r, &p.ID, d, filename, who)
 		s.writeJSON(w, http.StatusOK, printDenied(d.Reason))
 		return
 	}
@@ -117,7 +120,7 @@ func (s *Server) handlePrintRequest(w http.ResponseWriter, r *http.Request) {
 	// 3. Extension allow-list.
 	if !extensionAllowed(p.AllowedExtensions, filename) {
 		d := denied(ReasonExtensionBlocked, d.Member)
-		s.logDecision(r, &p.ID, d, filename)
+		s.logDecision(r, &p.ID, d, filename, who)
 		s.writeJSON(w, http.StatusOK, printDenied(ReasonExtensionBlocked))
 		return
 	}
@@ -125,7 +128,7 @@ func (s *Server) handlePrintRequest(w http.ResponseWriter, r *http.Request) {
 	// 4. Safety checklist — every configured item must be checked.
 	if missing := missingChecklistItems(r, len(p.SafetyChecklist)); missing {
 		d := denied(ReasonChecklist, d.Member)
-		s.logDecision(r, &p.ID, d, filename)
+		s.logDecision(r, &p.ID, d, filename, who)
 		s.writeJSON(w, http.StatusOK, printDenied(ReasonChecklist))
 		return
 	}
@@ -170,10 +173,14 @@ func (s *Server) handlePrintRequest(w http.ResponseWriter, r *http.Request) {
 
 	checklist := checklistAnswers(r, p.SafetyChecklist)
 
+	nameUsed := strings.TrimSpace(d.Member.Name)
+	if nameUsed == "" {
+		nameUsed = who
+	}
 	job, err := s.st.StartJob(r.Context(), store.PrintJob{
 		PrinterID:           p.ID,
 		MemberID:            &d.Member.ID,
-		SlackNameUsed:       strings.TrimSpace(slackName),
+		SlackNameUsed:       nameUsed,
 		Filename:            filename,
 		SlicedForModel:      slicedFor,
 		ChecklistAnswers:    checklist,
@@ -186,7 +193,7 @@ func (s *Server) handlePrintRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logDecision(r, &p.ID, d, filename)
+	s.logDecision(r, &p.ID, d, filename, who)
 
 	resp := map[string]any{
 		"approved":  true,
@@ -311,22 +318,33 @@ func (s *Server) lookupJob(w http.ResponseWriter, r *http.Request, p store.Print
 	return job, true
 }
 
-func (s *Server) logDecision(r *http.Request, printerID *int64, d Decision, filename string) {
+// identifierOf renders whichever identity the caller presented, for the audit
+// log: "fob:<code>" for a tap, the Slack name for a typed name, "-" for neither.
+func identifierOf(slackName, fobCode string) string {
+	if c := strings.TrimSpace(fobCode); c != "" {
+		return "fob:" + c
+	}
+	if n := strings.TrimSpace(slackName); n != "" {
+		return n
+	}
+	return "-"
+}
+
+func (s *Server) logDecision(r *http.Request, printerID *int64, d Decision, filename, identifier string) {
 	var memberID *int64
 	if d.Member != nil {
 		memberID = &d.Member.ID
 	}
+	if identifier == "" {
+		identifier = "-"
+	}
 	entry := store.DecisionLogEntry{
 		PrinterID:     printerID,
-		SlackNameUsed: strings.TrimSpace(r.FormValue("slack_name")),
+		SlackNameUsed: identifier,
 		MemberID:      memberID,
 		Filename:      filename,
 		Outcome:       d.Outcome,
 		Reason:        d.Reason,
-	}
-	if entry.SlackNameUsed == "" {
-		// check endpoint sends JSON, not a form
-		entry.SlackNameUsed = "-"
 	}
 	if err := s.st.LogDecision(r.Context(), entry); err != nil {
 		s.log.Warn("decision_log write failed", "err", err)

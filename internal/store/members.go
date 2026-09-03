@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dangerweenie/resin-print-portal/internal/fobcode"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -183,6 +184,29 @@ func (s *Store) ResolveSlackName(ctx context.Context, normalized string) (m Memb
 
 // ErrAmbiguousName means a fallback name lookup matched more than one member.
 var ErrAmbiguousName = errors.New("store: ambiguous slack name")
+
+// ResolveRFIDCode looks a member up by a tapped fob's UID (canonical hex from
+// the Pi). It matches members.code against every string form the UID could
+// have been recorded as — hex, colon-hex, decimal either endianness — so the
+// Pi never has to know which format TinkerAccess used.
+func (s *Store) ResolveRFIDCode(ctx context.Context, uidHex string) (Member, error) {
+	forms, err := fobcode.VariantsFromHex(uidHex)
+	if err != nil || len(forms) == 0 {
+		return Member{}, ErrNotFound
+	}
+	lowered := make([]string, len(forms))
+	for i, f := range forms {
+		lowered[i] = strings.ToLower(f)
+	}
+	m, err := scanMember(s.pool.QueryRow(ctx, `
+		SELECT `+memberCols+` FROM members
+		WHERE lower(btrim(coalesce(code,''))) = ANY($1) AND coalesce(code,'') <> ''
+		LIMIT 1`, lowered))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Member{}, ErrNotFound
+	}
+	return m, err
+}
 
 // AddSlackIdentity maps a normalized Slack name to a member.
 func (s *Store) AddSlackIdentity(ctx context.Context, memberID int64, normalized, addedBy string) error {

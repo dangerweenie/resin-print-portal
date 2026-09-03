@@ -6,13 +6,14 @@
 #
 # Run FROM the repo root on your dev machine:
 #   make pi-agent
-#   scp bin/pi-agent-armv6 usb-refresh.sh pi/resin-pi-agent.service pi/install.sh \
-#       pi/config.example.env captain@<pi>.lan:~/agent-install/
+#   scp bin/pi-agent-armv6 usb-refresh.sh pi/agent-guard.sh pi/resin-pi-agent.service \
+#       pi/install.sh pi/config.example.env captain@<pi>.lan:~/agent-install/
 #   ssh captain@<pi>.lan 'sudo bash ~/agent-install/install.sh ~/agent-install'
 #
 # It:
 #   - installs pi-agent          -> /usr/local/bin/pi-agent
 #   - installs usb-refresh.sh     -> /usr/local/bin/usb-refresh.sh
+#   - installs agent-guard.sh     -> /usr/local/bin/agent-guard.sh (self-update crash-loop guard)
 #   - installs the systemd unit   -> /etc/systemd/system/resin-pi-agent.service
 #   - seeds /etc/resin-pi-agent.env if missing
 #   - retires the old Flask printer-upload.service / /opt/printer-upload
@@ -44,6 +45,7 @@ sysctl_() { [ -n "$SKIP_SYSTEMD" ] || systemctl "$@"; }
 echo "==> installing pi-agent"
 install -D -m 0755 "$BIN"                         "$ROOT/usr/local/bin/pi-agent"
 install -D -m 0755 "$SRC/usb-refresh.sh"          "$ROOT/usr/local/bin/usb-refresh.sh"
+install -D -m 0755 "$SRC/agent-guard.sh"          "$ROOT/usr/local/bin/agent-guard.sh"
 install -D -m 0644 "$SRC/resin-pi-agent.service"  "$ROOT/etc/systemd/system/resin-pi-agent.service"
 
 if [ ! -f "$ROOT/etc/resin-pi-agent.env" ]; then

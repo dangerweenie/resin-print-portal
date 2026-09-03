@@ -38,8 +38,11 @@
 #
 # Optional: --user (default captain), --wifi-country (default US),
 # --central-url / --enroll-token (override provisioning/fleet.env),
-# --repo-root (default: parent directory of this script), --yes (device
-# mode only — skip the "type the device path to confirm" prompt).
+# --repo-root (default: parent dir of this script), --yes (device mode only —
+# skip the "type the device path to confirm" prompt).
+#
+# Every Pi is fob-only: an MFRC522 must be wired (SPI0.0 / GPIO25) and members
+# tap to identify. There is no name-entry mode and nothing to configure for it.
 #
 # After the Pi boots it self-registers with the portal; an admin approves it
 # once under Printers → Pending. The resin-room volunteer does nothing.
@@ -302,6 +305,7 @@ rm -rf "$BOOT/payload"
 mkdir -p "$BOOT/payload/agent"
 cp "$AGENT_BIN"                              "$BOOT/payload/agent/pi-agent-armv6"
 cp "$REPO_ROOT/usb-refresh.sh"              "$BOOT/payload/agent/usb-refresh.sh"
+cp "$REPO_ROOT/pi/agent-guard.sh"           "$BOOT/payload/agent/agent-guard.sh"
 cp "$REPO_ROOT/pi/resin-pi-agent.service"   "$BOOT/payload/agent/resin-pi-agent.service"
 cp "$REPO_ROOT/pi/install.sh"               "$BOOT/payload/agent/install.sh"
 cp "$REPO_ROOT/pi/config.example.env"       "$BOOT/payload/agent/config.example.env"
@@ -310,6 +314,10 @@ cp "$REPO_ROOT/piusb-gadget.service"        "$BOOT/payload/"
 # Stage a FILLED env with the fleet constant(s). Everything printer-specific
 # (slug, API key) the Pi gets by self-registering with the portal on first
 # boot — nobody edits anything per card. install.sh installs this verbatim.
+# There is deliberately no way to change any of this on the Pi: a running Pi
+# is whatever it was flashed with (its power is cut every time the printer is
+# switched off, so on-Pi state can't be trusted). The agent is fob-only; there
+# is no knob for that.
 cat > "$BOOT/payload/agent/resin-pi-agent.env" <<EOF
 CENTRAL_BASE_URL=$CENTRAL_URL
 ENROLL_TOKEN=$ENROLL_TOKEN

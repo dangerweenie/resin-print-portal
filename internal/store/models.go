@@ -55,6 +55,12 @@ type Printer struct {
 	EnrolledAt        *time.Time
 	LastSeenAt        *time.Time
 	CreatedAt         time.Time
+
+	// Fleet self-update bookkeeping.
+	AgentVersion        string     // last version the Pi reported
+	AgentVersionAt      *time.Time // when AgentVersion last changed
+	AgentTargetOverride string     // non-empty: pin this Pi to this version now
+	AgentUpdateHold     bool       // true: never auto-update this Pi
 }
 
 // Certification is a member's resin-printer certification.

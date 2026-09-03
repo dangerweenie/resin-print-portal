@@ -13,6 +13,7 @@ type DataStore interface {
 
 	// identity + certification
 	ResolveSlackName(ctx context.Context, normalized string) (store.Member, bool, error)
+	ResolveRFIDCode(ctx context.Context, code string) (store.Member, error)
 	IsCertified(ctx context.Context, memberID, printerID int64) (bool, error)
 
 	// printers
@@ -26,6 +27,8 @@ type DataStore interface {
 	SetPrinterApproved(ctx context.Context, id int64, approved bool) error
 	DeletePrinter(ctx context.Context, id int64) error
 	TouchPrinterSeen(ctx context.Context, id int64) error
+	SetPrinterAgentVersion(ctx context.Context, id int64, version string) error
+	SetPrinterAgentUpdate(ctx context.Context, id int64, override string, hold bool) error
 	CountPendingPrinters(ctx context.Context) (int, error)
 
 	// members + slack identities

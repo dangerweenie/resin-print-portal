@@ -22,7 +22,7 @@ func testStore(t *testing.T) *store.Store {
 	if dsn == "" {
 		t.Skip("set TEST_DATABASE_URL to run worker integration tests")
 	}
-	_ = store.Migrate(dsn, "down")
+	_ = store.Migrate(dsn, "reset")
 	if err := store.Migrate(dsn, "up"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
