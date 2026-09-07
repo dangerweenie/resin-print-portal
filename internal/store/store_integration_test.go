@@ -231,3 +231,106 @@ func TestEnrollPrinter(t *testing.T) {
 }
 
 var DefaultChecklistForTest = []string{"check the vat", "check the plate"}
+
+func TestStageClaimAndFileLifecycle(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	if _, err := st.SyncRoster(ctx, []store.RosterEntry{
+		{ID: 1, Name: "Ada", Status: "A"}, {ID: 2, Name: "Bea", Status: "A"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.CreatePrinter(ctx, store.Printer{Slug: "resin", DisplayName: "Resin", APIKeyHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, m2 := int64(1), int64(2)
+
+	// Ada stages a job.
+	j1, err := st.StageJob(ctx, store.PrintJob{PrinterID: p.ID, MemberID: &m1, SlackNameUsed: "Ada", Filename: "a.goo"},
+		[]byte("AAA"), "sha-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j1.Status != "staged" {
+		t.Fatalf("status = %q, want staged", j1.Status)
+	}
+	if _, err := st.CurrentJob(ctx, p.ID); err == nil {
+		t.Fatal("a staged job is not the current (printing) job")
+	}
+
+	// A second upload from Ada supersedes the first staged job + its file.
+	j2, err := st.StageJob(ctx, store.PrintJob{PrinterID: p.ID, MemberID: &m1, SlackNameUsed: "Ada", Filename: "a2.goo"},
+		[]byte("AAAA"), "sha-a2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.GetJobFileBytes(ctx, j1.ID); err != store.ErrNotFound {
+		t.Fatalf("superseded staged file should be gone, got %v", err)
+	}
+
+	// Bea has nothing staged -> claim finds nothing.
+	if _, _, err := st.ClaimStagedJob(ctx, p.ID, m2); err != store.ErrNotFound {
+		t.Fatalf("Bea claim = %v, want ErrNotFound", err)
+	}
+
+	// Ada taps: her latest staged job becomes the printing job.
+	claimed, meta, err := st.ClaimStagedJob(ctx, p.ID, m1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != j2.ID || meta.Filename != "a2.goo" || meta.SHA256 != "sha-a2" {
+		t.Fatalf("claimed = %+v meta = %+v", claimed, meta)
+	}
+	cur, err := st.CurrentJob(ctx, p.ID)
+	if err != nil || cur.ID != j2.ID {
+		t.Fatalf("current job = %+v err=%v", cur, err)
+	}
+	b, name, err := st.GetJobFileBytes(ctx, j2.ID)
+	if err != nil || string(b) != "AAAA" || name != "a2.goo" {
+		t.Fatalf("file bytes = %q %q %v", b, name, err)
+	}
+
+	// Starting the print drops the stored bytes.
+	if err := st.DiscardJobFile(ctx, j2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.GetJobFileBytes(ctx, j2.ID); err != store.ErrNotFound {
+		t.Fatalf("bytes should be gone after discard, got %v", err)
+	}
+}
+
+func TestCertCaptureWindow(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	p, err := st.CreatePrinter(ctx, store.Printer{Slug: "resin", DisplayName: "Resin", APIKeyHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing armed.
+	if _, armed, err := st.ConsumeCertCapture(ctx, p.ID); err != nil || armed {
+		t.Fatalf("unarmed consume = armed:%v err:%v", armed, err)
+	}
+
+	// Arm, then the first consume wins and the second finds nothing.
+	if err := st.ArmCertCapture(ctx, p.ID, "captain", time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	by, armed, err := st.ConsumeCertCapture(ctx, p.ID)
+	if err != nil || !armed || by != "captain" {
+		t.Fatalf("first consume = by:%q armed:%v err:%v", by, armed, err)
+	}
+	if _, armed, _ := st.ConsumeCertCapture(ctx, p.ID); armed {
+		t.Fatal("capture should be one-shot")
+	}
+
+	// An expired window is ignored.
+	if err := st.ArmCertCapture(ctx, p.ID, "captain", time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, armed, _ := st.ConsumeCertCapture(ctx, p.ID); armed {
+		t.Fatal("expired capture must not fire")
+	}
+}

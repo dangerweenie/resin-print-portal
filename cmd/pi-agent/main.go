@@ -25,6 +25,20 @@ func main() {
 	probe := flag.Bool("probe", false, "read the RFID reader and print each fob in every code format, then exit (for bring-up)")
 	flag.Parse()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// -probe is a standalone wiring diagnostic: it talks to the MFRC522 and
+	// nothing else, so it must NOT require CENTRAL_BASE_URL or any other portal
+	// config. Handle it before LoadPiAgent.
+	if *probe {
+		if err := rfid.Probe(ctx); err != nil {
+			newLogger(os.Getenv("LOG_LEVEL")).Error("rfid probe failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg, err := config.LoadPiAgent()
 	if err != nil {
 		slog.Error("config", "err", err)
@@ -32,17 +46,6 @@ func main() {
 	}
 	log := newLogger(cfg.LogLevel)
 	log.Info("pi-agent starting", "version", buildinfo.Resolve())
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if *probe {
-		if err := rfid.Probe(ctx); err != nil {
-			log.Error("rfid probe failed", "err", err)
-			os.Exit(1)
-		}
-		return
-	}
 
 	central := piagent.NewCentralClient(cfg.CentralBaseURL, cfg.PrinterSlug, cfg.PrinterAPIKey)
 

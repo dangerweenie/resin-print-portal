@@ -107,17 +107,36 @@ open(sys.argv[1], "wb").write(buf)
 PY
 GOO_SHA=$(sha256sum < "$GOO" | cut -d' ' -f1)
 
-# --- 2. submit through the agent -------------------------------------
+# --- 2a. upload to the CENTRAL PORTAL (members no longer upload to the Pi) --
 CHECK_ARGS=()
 i=0
 while [ $i -lt 12 ]; do CHECK_ARGS+=(-F "check_$i=1"); i=$((i+1)); done
-SUBMIT=$(curl -s -L -F "slack_name=$SLACK_NAME" "${CHECK_ARGS[@]}" \
-    -F "file=@$GOO;filename=hwtest.goo" "$AGENT_URL/submit")
-if echo "$SUBMIT" | grep -qi "on the printer"; then
-    pass "agent accepted the upload and reported it placed on the gadget"
+STAGE=$(curl -s -L -F "slack_name=$SLACK_NAME" -F "printer=$SLUG" "${CHECK_ARGS[@]}" \
+    -F "file=@$GOO;filename=hwtest.goo" "$CENTRAL/upload")
+if echo "$STAGE" | grep -qi "tap your fob"; then
+    pass "portal staged the upload for $SLUG"
 else
-    fail "agent did not confirm placement; response: $(echo "$SUBMIT" | tr -d '\n' | head -c 300)"
+    fail "portal did not stage the upload; response: $(echo "$STAGE" | tr -d '\n' | head -c 300)"
 fi
+
+# --- 2b. fob-release at the Pi -------------------------------------------
+echo
+echo ">>> TAP the test member's fob on the reader at $HOST now."
+printf '    waiting for the Pi to see a staged job for that fob'
+for _ in $(seq 1 40); do
+    SCAN=$(curl -s "$AGENT_URL/scan")
+    echo "$SCAN" | grep -q '"staged_filename":"hwtest.goo"' && break
+    printf '.'; sleep 2
+done
+echo
+echo "$SCAN" | grep -q '"staged_filename":"hwtest.goo"' \
+    && pass "Pi /scan shows the staged job after the tap" \
+    || fail "Pi never saw the staged job (tapped? reader working? — try: sudo pi-agent -probe)"
+
+LOAD=$(curl -s -L -X POST "$AGENT_URL/load")
+echo "$LOAD" | grep -qi "onto the printer" \
+    && pass "agent loaded the staged file onto the gadget" \
+    || fail "agent did not confirm load; response: $(echo "$LOAD" | tr -d '\n' | head -c 300)"
 
 # --- 3. central shows the job --------------------------------------
 CUR=$(api /current-job)

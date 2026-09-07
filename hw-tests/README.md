@@ -94,17 +94,19 @@ Env override: `SCRIPT_UNDER_TEST` — a local path to a working-tree
 The direct answer to "does a file actually reach the printer when a member
 uploads it, and actually leave when they're done." It:
 
-1. checks the agent's upload page responds and the central `/config` is
-   reachable for the slug;
+1. checks the agent's page responds and the central `/config` is reachable
+   for the slug;
 2. builds a tiny synthetic `.goo` locally (valid `V3.0` header + a nonzero
    `print_time`);
-3. `POST`s it to the agent's `/submit` with the checklist ticked, as the
-   certified test member's Slack name;
-4. asserts the central `/current-job` now shows `hwtest.goo` and parsed its
+3. uploads it to the **central portal** `/upload` (checklist ticked, as the
+   certified test member's Slack name) — members no longer upload to the Pi;
+4. prompts you to **tap the test member's fob** at the Pi, polls the agent's
+   `/scan` until it reports the staged job, then `POST`s `/load`;
+5. asserts the central `/current-job` now shows `hwtest.goo` and parsed its
    ETA as exact;
-5. unloads the real `/piusb.bin` over SSH, mounts it, and asserts it holds
+6. unloads the real `/piusb.bin` over SSH, mounts it, and asserts it holds
    exactly `hwtest.goo`, byte-identical (sha256) to what was uploaded;
-6. `POST`s `/finish` and asserts the gadget is cleared.
+7. `POST`s `/finish` and asserts the gadget is cleared.
 
 ```bash
 bash hw-tests/test-full-flow-against-pi.sh \

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dangerweenie/resin-print-portal/internal/config"
 	"github.com/dangerweenie/resin-print-portal/internal/store"
@@ -18,14 +19,33 @@ import (
 type fakeStore struct {
 	DataStore
 	printer    store.Printer
+	printers   []store.Printer // ListPrinters; falls back to [printer]
 	resolve    func(norm string) (store.Member, bool, error)
 	resolveFob func(code string) (store.Member, error)
 	certified  bool
 	logged     []store.DecisionLogEntry
+
+	captureArmed bool
+	captureBy    string
+	certifyCalls [][3]int64 // {memberID, printerID, 0}
+
+	staged      *store.PrintJob  // last StageJob
+	stagedBytes []byte           // last StageJob payload
+	peek        *store.PrintJob  // PeekStagedJob result ("" => ErrNotFound)
+	claimJob    store.PrintJob   // ClaimStagedJob result
+	claimMeta   store.StagedMeta // ClaimStagedJob result
+	claimErr    error            // ClaimStagedJob error (e.g. store.ErrNotFound)
+	fileBytes   map[int64][]byte // GetJobFileBytes by job id
 }
 
 func (f *fakeStore) GetPrinterByKeyHash(context.Context, string) (store.Printer, error) {
 	return f.printer, nil
+}
+func (f *fakeStore) ListPrinters(context.Context) ([]store.Printer, error) {
+	if f.printers != nil {
+		return f.printers, nil
+	}
+	return []store.Printer{f.printer}, nil
 }
 func (f *fakeStore) ResolveSlackName(_ context.Context, norm string) (store.Member, bool, error) {
 	return f.resolve(norm)
@@ -46,6 +66,49 @@ func (f *fakeStore) LogDecision(_ context.Context, e store.DecisionLogEntry) err
 func (f *fakeStore) TouchPrinterSeen(context.Context, int64) error                    { return nil }
 func (f *fakeStore) SetPrinterAgentVersion(context.Context, int64, string) error      { return nil }
 func (f *fakeStore) SetPrinterAgentUpdate(context.Context, int64, string, bool) error { return nil }
+
+func (f *fakeStore) ConsumeCertCapture(context.Context, int64) (string, bool, error) {
+	if f.captureArmed {
+		f.captureArmed = false
+		return f.captureBy, true, nil
+	}
+	return "", false, nil
+}
+func (f *fakeStore) Certify(_ context.Context, memberID, printerID int64, _ string) error {
+	f.certifyCalls = append(f.certifyCalls, [3]int64{memberID, printerID, 0})
+	return nil
+}
+func (f *fakeStore) PeekStagedJob(context.Context, int64, int64) (store.PrintJob, error) {
+	if f.peek != nil {
+		return *f.peek, nil
+	}
+	return store.PrintJob{}, store.ErrNotFound
+}
+func (f *fakeStore) ArmCertCapture(context.Context, int64, string, time.Time) error { return nil }
+func (f *fakeStore) DisarmCertCapture(context.Context, int64) error                 { return nil }
+
+func (f *fakeStore) StageJob(_ context.Context, j store.PrintJob, b []byte, _ string) (store.PrintJob, error) {
+	j.ID = 99
+	f.staged = &j
+	f.stagedBytes = b
+	return j, nil
+}
+func (f *fakeStore) ClaimStagedJob(context.Context, int64, int64) (store.PrintJob, store.StagedMeta, error) {
+	if f.claimErr != nil {
+		return store.PrintJob{}, store.StagedMeta{}, f.claimErr
+	}
+	return f.claimJob, f.claimMeta, nil
+}
+func (f *fakeStore) GetJobFileBytes(_ context.Context, jobID int64) ([]byte, string, error) {
+	if b, ok := f.fileBytes[jobID]; ok {
+		return b, "job.goo", nil
+	}
+	return nil, "", store.ErrNotFound
+}
+func (f *fakeStore) DiscardJobFile(context.Context, int64) error { return nil }
+func (f *fakeStore) GetJob(_ context.Context, _, jobID int64) (store.PrintJob, error) {
+	return store.PrintJob{ID: jobID, PrinterID: f.printer.ID}, nil
+}
 
 func newTestServer(t *testing.T, fs *fakeStore) *Server {
 	t.Helper()

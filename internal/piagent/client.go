@@ -3,11 +3,12 @@ package piagent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -123,16 +124,6 @@ type Config struct {
 	SafetyChecklist   []string `json:"safety_checklist"`
 }
 
-// PrintResult is the central service's verdict on a print request.
-type PrintResult struct {
-	Approved       bool   `json:"approved"`
-	Reason         string `json:"reason"`
-	JobID          int64  `json:"job_id"`
-	ETASeconds     int    `json:"eta_seconds"`
-	ETAExact       bool   `json:"eta_exact"`
-	MachineWarning string `json:"machine_warning"`
-}
-
 // CurrentJob is a slim view of the printer's active job.
 type CurrentJob struct {
 	CurrentJob *struct {
@@ -243,15 +234,19 @@ func (c *CentralClient) FetchCurrentJob(ctx context.Context) (CurrentJob, error)
 	return cj, c.do(req, &cj)
 }
 
-// CheckResult is the portal's verdict on an identity, with no file involved.
+// CheckResult is the portal's verdict on a tapped fob, plus whether that member
+// has a print staged here and whether this tap just certified them.
 type CheckResult struct {
-	Allowed    bool   `json:"allowed"`
-	Reason     string `json:"reason"`
-	MemberName string `json:"member_name"`
+	Allowed        bool   `json:"allowed"`
+	Reason         string `json:"reason"`
+	MemberName     string `json:"member_name"`
+	StagedFilename string `json:"staged_filename"`
+	StagedETA      string `json:"staged_eta"`
+	Certified      bool   `json:"certified"` // this tap consumed a certify-by-tap window
 }
 
-// CheckFob asks the portal who a tapped fob belongs to and whether they may
-// print here — used to show "Tapped: Jane Doe" on the page before submit.
+// CheckFob asks the portal who a tapped fob belongs to, whether they may print
+// here, and whether they have a file waiting to load.
 func (c *CentralClient) CheckFob(ctx context.Context, code string) (CheckResult, error) {
 	body, _ := json.Marshal(map[string]string{"rfid_code": code})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/check"), bytes.NewReader(body))
@@ -260,45 +255,56 @@ func (c *CentralClient) CheckFob(ctx context.Context, code string) (CheckResult,
 	return out, c.do(req, &out)
 }
 
-// SubmitPrint uploads the sliced file at filePath plus the tapped fob code and
-// checklist answers, and returns the central service's verdict.
-func (c *CentralClient) SubmitPrint(ctx context.Context, fobCode, filename, filePath string, checked []bool) (PrintResult, error) {
-	f, err := os.Open(filePath)
+// ClaimResult is the portal's answer to a fob-release: promote my staged job to
+// printing and tell me where to fetch the file.
+type ClaimResult struct {
+	Claimed        bool   `json:"claimed"`
+	Reason         string `json:"reason"`
+	JobID          int64  `json:"job_id"`
+	Filename       string `json:"filename"`
+	SHA256         string `json:"sha256"`
+	Size           int64  `json:"size"`
+	ETASeconds     int    `json:"eta_seconds"`
+	ETAExact       bool   `json:"eta_exact"`
+	MachineWarning string `json:"machine_warning"`
+}
+
+// ClaimStagedJob does the fob-release: POST /claim with the tapped code.
+func (c *CentralClient) ClaimStagedJob(ctx context.Context, code string) (ClaimResult, error) {
+	body, _ := json.Marshal(map[string]string{"rfid_code": code})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/claim"), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	var out ClaimResult
+	return out, c.do(req, &out)
+}
+
+// DownloadJobFile streams a claimed job's file to destPath, verifying sha256
+// (hex) if non-empty. Returns the number of bytes written.
+func (c *CentralClient) DownloadJobFile(ctx context.Context, jobID int64, sha, destPath string) (int64, error) {
+	body, _, err := c.DownloadAgent(ctx, c.url(fmt.Sprintf("/jobs/%d/file", jobID)))
 	if err != nil {
-		return PrintResult{}, err
+		return 0, err
 	}
-	defer f.Close()
+	defer body.Close()
 
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	go func() {
-		defer pw.Close()
-		_ = mw.WriteField("rfid_code", fobCode)
-		_ = mw.WriteField("filename", filename)
-		for i, ok := range checked {
-			if ok {
-				_ = mw.WriteField("check_"+strconv.Itoa(i), "1")
-			}
-		}
-		part, err := mw.CreateFormFile("file", filename)
-		if err != nil {
-			pw.CloseWithError(err)
-			return
-		}
-		if _, err := io.Copy(part, f); err != nil {
-			pw.CloseWithError(err)
-			return
-		}
-		pw.CloseWithError(mw.Close())
-	}()
-
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/print-requests"), pr)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	var res PrintResult
-	if err := c.do(req, &res); err != nil {
-		return PrintResult{}, err
+	f, err := os.Create(destPath)
+	if err != nil {
+		return 0, err
 	}
-	return res, nil
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return n, err
+	}
+	if sha != "" {
+		if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, sha) {
+			return n, fmt.Errorf("piagent: downloaded file checksum %s != %s", got, sha)
+		}
+	}
+	return n, nil
 }
 
 // JobStarted tells central the file is live on the gadget.

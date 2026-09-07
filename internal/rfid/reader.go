@@ -33,8 +33,9 @@ type Reader struct {
 	ttl  time.Duration
 	log  *slog.Logger
 
-	mu   sync.Mutex
-	last *Scan
+	mu       sync.Mutex
+	last     *Scan
+	warnedRd bool // first read error is logged loudly; the rest are Debug
 }
 
 // NewReader builds a Reader. A tapped fob stays "current" for ttl so a member
@@ -73,9 +74,18 @@ func (r *Reader) Run(ctx context.Context) error {
 				continue // TTL handles expiry; no card is normal
 			}
 			if err != nil {
-				r.log.Debug("rfid read error", "err", err)
+				// A real protocol error (not just "no card"): surface the first
+				// one at Warn so a mis-wired or clone board is visible without
+				// LOG_LEVEL=debug. `pi-agent -probe` is the full diagnostic.
+				if !r.warnedRd {
+					r.warnedRd = true
+					r.log.Warn("rfid read error — a card was in range but couldn't be read; run `pi-agent -probe`", "err", err)
+				} else {
+					r.log.Debug("rfid read error", "err", err)
+				}
 				continue
 			}
+			r.warnedRd = false
 			r.mu.Lock()
 			r.last = &Scan{UID: uid, Code: strings.ToUpper(hex.EncodeToString(uid)), At: time.Now()}
 			r.mu.Unlock()

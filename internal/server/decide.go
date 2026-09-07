@@ -19,6 +19,8 @@ const (
 	ReasonChecklist          = "checklist_incomplete"
 	ReasonPendingApproval    = "printer_pending_approval"
 	ReasonUnknownFob         = "unknown_fob"
+	ReasonNoStagedJob        = "no_staged_job"
+	ReasonJustCertified      = "certification_recorded"
 )
 
 // Outcome codes for decision_log.outcome.
@@ -26,6 +28,7 @@ const (
 	OutcomeApproved       = "approved"
 	OutcomeApprovedByName = "approved_by_name_match"
 	OutcomeDenied         = "denied"
+	OutcomeCaptured       = "captured_certification"
 )
 
 var wsRe = regexp.MustCompile(`\s+`)

@@ -12,6 +12,30 @@
 </form>
 
 {{if .Selected.Slug}}
+<div class="flash" style="background:var(--surface-2,#23272e);border:1px solid var(--border,#2c313a)">
+  {{if .CaptureLeft}}
+    <strong>Certify by tap is armed</strong> for {{.Selected.DisplayName}} —
+    the next fob tapped at that printer will be certified
+    ({{.CaptureLeft}}s left{{if .CaptureBy}}, armed by {{.CaptureBy}}{{end}}).
+    <form class="inline" method="post" action="/admin/certifications/capture">
+      <input type="hidden" name="printer_id" value="{{.Selected.ID}}">
+      <input type="hidden" name="printer_slug" value="{{.Selected.Slug}}">
+      <input type="hidden" name="action" value="disarm">
+      <button class="secondary" type="submit">Cancel</button>
+    </form>
+    <script>setTimeout(function(){location.reload()}, 3000)</script>
+  {{else}}
+    <form class="inline" method="post" action="/admin/certifications/capture">
+      <input type="hidden" name="printer_id" value="{{.Selected.ID}}">
+      <input type="hidden" name="printer_slug" value="{{.Selected.Slug}}">
+      <input type="hidden" name="action" value="arm">
+      <button type="submit">Certify by tap</button>
+    </form>
+    <span class="muted">Arms a 2-minute window; the next fob tapped at
+    {{.Selected.DisplayName}} gets certified for it.</span>
+  {{end}}
+</div>
+
 <table>
   <thead><tr><th>Member</th><th>Membership</th><th>Certified</th><th></th></tr></thead>
   <tbody>

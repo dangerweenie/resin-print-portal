@@ -61,6 +61,10 @@ type Printer struct {
 	AgentVersionAt      *time.Time // when AgentVersion last changed
 	AgentTargetOverride string     // non-empty: pin this Pi to this version now
 	AgentUpdateHold     bool       // true: never auto-update this Pi
+
+	// Certify-by-tap capture window.
+	CertCaptureUntil *time.Time
+	CertCaptureBy    string
 }
 
 // Certification is a member's resin-printer certification.
@@ -89,6 +93,14 @@ type PrintJob struct {
 	EndedAt             *time.Time
 	Status              string
 	EndReason           *string
+}
+
+// StagedMeta describes a staged file without carrying its bytes.
+type StagedMeta struct {
+	JobID     int64
+	Filename  string
+	SHA256    string
+	SizeBytes int64
 }
 
 // DecisionLogEntry records one check/upload attempt.

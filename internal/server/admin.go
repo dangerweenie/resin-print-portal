@@ -315,9 +315,43 @@ func (s *Server) handleCertifications(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var captureLeft int // seconds remaining on an armed capture window
+	if selected.CertCaptureUntil != nil {
+		if d := int(time.Until(*selected.CertCaptureUntil).Seconds()); d > 0 {
+			captureLeft = d
+		}
+	}
 	s.renderPage(w, "certifications.html", s.pageData(r, map[string]any{
 		"Printers": printers, "Selected": selected, "Rows": rows,
+		"CaptureLeft": captureLeft, "CaptureBy": selected.CertCaptureBy,
 	}))
+}
+
+// certCaptureWindow is how long a "certify by tap" arming lasts.
+const certCaptureWindow = 2 * time.Minute
+
+// POST /admin/certifications/capture   form: printer_id, printer_slug, action=arm|disarm
+func (s *Server) handleCertCapture(w http.ResponseWriter, r *http.Request) {
+	printerID, _ := strconv.ParseInt(r.FormValue("printer_id"), 10, 64)
+	slug := r.FormValue("printer_slug")
+	var err error
+	var msg string
+	switch r.FormValue("action") {
+	case "arm":
+		err = s.st.ArmCertCapture(r.Context(), printerID, adminFrom(r.Context()), s.now().Add(certCaptureWindow))
+		msg = "armed+%E2%80%94+tap+a+fob+at+the+printer"
+	case "disarm":
+		err = s.st.DisarmCertCapture(r.Context(), printerID)
+		msg = "capture+cancelled"
+	default:
+		http.Redirect(w, r, "/admin/certifications?printer="+slug+"&err=unknown+action", http.StatusFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err, "cert capture")
+		return
+	}
+	http.Redirect(w, r, "/admin/certifications?printer="+slug+"&msg="+msg, http.StatusFound)
 }
 
 func (s *Server) handleCertifyToggle(w http.ResponseWriter, r *http.Request) {

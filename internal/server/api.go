@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -51,162 +50,140 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	who := identifierOf(body.SlackName, body.RFIDCode)
+
 	d, err := s.decide(r.Context(), p.ID, body.SlackName, body.RFIDCode)
 	if err != nil {
 		s.serverError(w, err, "check decide")
 		return
 	}
-	s.logDecision(r, &p.ID, d, "", identifierOf(body.SlackName, body.RFIDCode))
+
+	// Certify-by-tap: if an admin armed a capture window on this printer, the
+	// first tap that resolves to a member certifies them instead of being a
+	// normal check. Consumed atomically so a held fob only fires once.
+	if d.Member != nil {
+		by, armed, cerr := s.st.ConsumeCertCapture(r.Context(), p.ID)
+		if cerr != nil {
+			s.serverError(w, cerr, "check consume capture")
+			return
+		}
+		if armed {
+			if err := s.st.Certify(r.Context(), d.Member.ID, p.ID, orDefault(by, "capture")); err != nil {
+				s.serverError(w, err, "check capture certify")
+				return
+			}
+			cap := Decision{Outcome: OutcomeCaptured, Reason: ReasonJustCertified, Member: d.Member}
+			s.logDecision(r, &p.ID, cap, "", who)
+			s.writeJSON(w, http.StatusOK, map[string]any{
+				"allowed": false, "reason": ReasonJustCertified,
+				"member_name": d.Member.Name, "certified": true,
+			})
+			return
+		}
+	}
+
+	s.logDecision(r, &p.ID, d, "", who)
 
 	resp := map[string]any{"allowed": d.Allowed, "reason": d.Reason}
 	if d.Member != nil {
 		resp["member_name"] = d.Member.Name
+		// Show the member whether they have a print waiting here.
+		if job, jerr := s.st.PeekStagedJob(r.Context(), p.ID, d.Member.ID); jerr == nil {
+			resp["staged_filename"] = job.Filename
+			if job.EstimatedSeconds != nil {
+				resp["staged_eta"] = sliced.FormatDuration(int(*job.EstimatedSeconds))
+			}
+		} else if !errors.Is(jerr, store.ErrNotFound) {
+			s.log.Warn("peek staged job failed", "err", jerr)
+		}
 	}
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
-// POST /api/v1/printers/{slug}/print-requests  (multipart form)
-//
-//	fields: slack_name, filename, check_0..check_N
-//	file:   file
-func (s *Server) handlePrintRequest(w http.ResponseWriter, r *http.Request) {
+// POST /api/v1/printers/{slug}/claim   body: {"rfid_code": "..."}
+// The fob-release step: the member tapped at the printer, so promote their
+// staged job to printing and tell the Pi where to fetch the file.
+func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 	p := printerFrom(r.Context())
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad multipart form: " + err.Error()})
+	var body struct {
+		RFIDCode string `json:"rfid_code"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
 		return
 	}
-	defer func() {
-		if r.MultipartForm != nil {
-			_ = r.MultipartForm.RemoveAll()
-		}
-	}()
-
-	slackName := r.FormValue("slack_name")
-	fobCode := r.FormValue("rfid_code")
-	who := identifierOf(slackName, fobCode)
-	filename := sanitizeFilename(r.FormValue("filename"))
+	who := identifierOf("", body.RFIDCode)
 
 	if !p.Approved {
 		d := denied(ReasonPendingApproval, nil)
-		s.logDecision(r, &p.ID, d, filename, who)
-		s.writeJSON(w, http.StatusOK, printDenied(d.Reason))
+		s.logDecision(r, &p.ID, d, "", who)
+		s.writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": d.Reason})
 		return
 	}
 
-	// 1. Identity / membership / certification.
-	d, err := s.decide(r.Context(), p.ID, slackName, fobCode)
+	d, err := s.decideByFob(r.Context(), p.ID, body.RFIDCode)
 	if err != nil {
-		s.serverError(w, err, "print-request decide")
+		s.serverError(w, err, "claim decide")
 		return
 	}
 	if !d.Allowed {
-		s.logDecision(r, &p.ID, d, filename, who)
-		s.writeJSON(w, http.StatusOK, printDenied(d.Reason))
+		s.logDecision(r, &p.ID, d, "", who)
+		s.writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": d.Reason})
 		return
 	}
 
-	// 2. Pull the uploaded file to a temp path for parsing.
-	file, hdr, err := r.FormFile("file")
+	job, meta, err := s.st.ClaimStagedJob(r.Context(), p.ID, d.Member.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		nd := denied(ReasonNoStagedJob, d.Member)
+		s.logDecision(r, &p.ID, nd, "", who)
+		s.writeJSON(w, http.StatusOK, map[string]any{"claimed": false, "reason": ReasonNoStagedJob})
+		return
+	}
 	if err != nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing file part"})
+		s.serverError(w, err, "claim ClaimStagedJob")
 		return
 	}
-	defer file.Close()
-	if filename == "" {
-		filename = sanitizeFilename(hdr.Filename)
-	}
-
-	// 3. Extension allow-list.
-	if !extensionAllowed(p.AllowedExtensions, filename) {
-		d := denied(ReasonExtensionBlocked, d.Member)
-		s.logDecision(r, &p.ID, d, filename, who)
-		s.writeJSON(w, http.StatusOK, printDenied(ReasonExtensionBlocked))
-		return
-	}
-
-	// 4. Safety checklist — every configured item must be checked.
-	if missing := missingChecklistItems(r, len(p.SafetyChecklist)); missing {
-		d := denied(ReasonChecklist, d.Member)
-		s.logDecision(r, &p.ID, d, filename, who)
-		s.writeJSON(w, http.StatusOK, printDenied(ReasonChecklist))
-		return
-	}
-
-	tmp, err := os.CreateTemp("", "sliced-*"+extOf(filename))
-	if err != nil {
-		s.serverError(w, err, "print-request CreateTemp")
-		return
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := io.Copy(tmp, file); err != nil {
-		tmp.Close()
-		s.serverError(w, err, "print-request spool upload")
-		return
-	}
-	tmp.Close()
-
-	// 5. Parse ETA + embedded machine name (best effort).
-	var (
-		estSeconds  *int32
-		etaExact    bool
-		etaAt       *time.Time
-		machineWarn string
-		slicedFor   string
-	)
-	if info, perr := sliced.GetInfo(tmpPath); perr != nil {
-		s.log.Warn("no ETA for upload", "file", filename, "err", perr)
-	} else {
-		v := int32(info.EstimatedSeconds)
-		estSeconds = &v
-		etaExact = info.Exact
-		slicedFor = info.MachineName
-		if info.EstimatedSeconds > 0 {
-			t := s.now().Add(time.Duration(info.EstimatedSeconds) * time.Second)
-			etaAt = &t
-		}
-		if warn := machineMismatch(p.Model, info.MachineName); warn != "" {
-			machineWarn = warn
-		}
-	}
-
-	checklist := checklistAnswers(r, p.SafetyChecklist)
-
-	nameUsed := strings.TrimSpace(d.Member.Name)
-	if nameUsed == "" {
-		nameUsed = who
-	}
-	job, err := s.st.StartJob(r.Context(), store.PrintJob{
-		PrinterID:           p.ID,
-		MemberID:            &d.Member.ID,
-		SlackNameUsed:       nameUsed,
-		Filename:            filename,
-		SlicedForModel:      slicedFor,
-		ChecklistAnswers:    checklist,
-		EstimatedSeconds:    estSeconds,
-		ETAExact:            etaExact,
-		EstimatedCompleteAt: etaAt,
-	})
-	if err != nil {
-		s.serverError(w, err, "print-request StartJob")
-		return
-	}
-
-	s.logDecision(r, &p.ID, d, filename, who)
+	s.logDecision(r, &p.ID, Decision{Allowed: true, Outcome: OutcomeApproved, Member: d.Member},
+		job.Filename, who)
 
 	resp := map[string]any{
-		"approved":  true,
+		"claimed":   true,
 		"job_id":    job.ID,
-		"eta_exact": etaExact,
+		"filename":  meta.Filename,
+		"sha256":    meta.SHA256,
+		"size":      meta.SizeBytes,
+		"eta_exact": job.ETAExact,
 	}
-	if estSeconds != nil {
-		resp["eta_seconds"] = *estSeconds
+	if job.EstimatedSeconds != nil {
+		resp["eta_seconds"] = *job.EstimatedSeconds
 	}
-	if machineWarn != "" {
-		resp["machine_warning"] = machineWarn
+	if warn := machineMismatch(p.Model, job.SlicedForModel); warn != "" {
+		resp["machine_warning"] = warn
 	}
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// GET /api/v1/printers/{slug}/jobs/{id}/file
+// Streams the staged sliced file to the Pi. Gone (404) once the print starts.
+func (s *Server) handleJobFile(w http.ResponseWriter, r *http.Request) {
+	p := printerFrom(r.Context())
+	job, ok := s.lookupJob(w, r, p)
+	if !ok {
+		return
+	}
+	b, name, err := s.st.GetJobFileBytes(r.Context(), job.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "file no longer staged"})
+		return
+	}
+	if err != nil {
+		s.serverError(w, err, "job file bytes")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+	_, _ = w.Write(b)
 }
 
 // GET /api/v1/printers/{slug}/current-job
@@ -241,6 +218,10 @@ func (s *Server) handleJobStarted(w http.ResponseWriter, r *http.Request) {
 	}
 	s.postSlack(r, p, fmt.Sprintf(":large_green_circle: *%s* started printing `%s` on *%s*%s",
 		displayName(job), job.Filename, p.DisplayName, eta))
+	// The file is on the gadget now — drop the portal's copy.
+	if err := s.st.DiscardJobFile(r.Context(), job.ID); err != nil {
+		s.log.Warn("could not discard staged file after start", "job", job.ID, "err", err)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

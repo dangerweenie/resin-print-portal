@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -12,7 +13,8 @@ import (
 const printerCols = `id, slug, display_name, model, allowed_extensions,
 	safety_checklist, slack_webhook_url, api_key_hash,
 	coalesce(device_id, ''), approved, enrolled_at, last_seen_at, created_at,
-	agent_version, agent_version_at, agent_target_override, agent_update_hold`
+	agent_version, agent_version_at, agent_target_override, agent_update_hold,
+	cert_capture_until, cert_capture_by`
 
 func scanPrinter(row pgx.Row) (Printer, error) {
 	var p Printer
@@ -20,7 +22,7 @@ func scanPrinter(row pgx.Row) (Printer, error) {
 		&p.AllowedExtensions, &p.SafetyChecklist, &p.SlackWebhookURL,
 		&p.APIKeyHash, &p.DeviceID, &p.Approved, &p.EnrolledAt, &p.LastSeenAt,
 		&p.CreatedAt, &p.AgentVersion, &p.AgentVersionAt, &p.AgentTargetOverride,
-		&p.AgentUpdateHold)
+		&p.AgentUpdateHold, &p.CertCaptureUntil, &p.CertCaptureBy)
 	return p, err
 }
 
@@ -154,6 +156,44 @@ func (s *Store) SetPrinterAgentUpdate(ctx context.Context, id int64, override st
 		       agent_update_hold = $3
 		 WHERE id = $1`, id, override, hold)
 	return err
+}
+
+// ArmCertCapture opens a certify-by-tap window on a printer: the next eligible
+// fob tapped there certifies that member, with certified_by = by.
+func (s *Store) ArmCertCapture(ctx context.Context, printerID int64, by string, until time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE printers SET cert_capture_until=$2, cert_capture_by=$3 WHERE id=$1`,
+		printerID, until, by)
+	return err
+}
+
+// DisarmCertCapture cancels an armed capture window.
+func (s *Store) DisarmCertCapture(ctx context.Context, printerID int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE printers SET cert_capture_until=NULL, cert_capture_by='' WHERE id=$1`, printerID)
+	return err
+}
+
+// ConsumeCertCapture atomically claims an armed, unexpired capture window and
+// returns the admin who armed it. armed is false (no error) when nothing was
+// armed — the caller then treats the tap as an ordinary check.
+func (s *Store) ConsumeCertCapture(ctx context.Context, printerID int64) (by string, armed bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		WITH c AS (
+			SELECT id, cert_capture_by FROM printers
+			WHERE id=$1 AND cert_capture_until IS NOT NULL AND cert_capture_until > now()
+			FOR UPDATE
+		)
+		UPDATE printers p SET cert_capture_until=NULL, cert_capture_by=''
+		FROM c WHERE p.id = c.id
+		RETURNING c.cert_capture_by`, printerID).Scan(&by)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return by, true, nil
 }
 
 // UpdatePrinter updates the editable fields of a printer by id.

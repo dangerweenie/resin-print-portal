@@ -9,7 +9,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"html/template"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -75,7 +74,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/", a.handleIndex)
 	mux.HandleFunc("/scan", a.handleScan)
-	mux.HandleFunc("/submit", a.handleSubmit)
+	mux.HandleFunc("/load", a.handleLoad)
 	mux.HandleFunc("/finish", a.handleFinish)
 	return mux
 }
@@ -99,13 +98,17 @@ func (a *Agent) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	if !cached {
 		a.log.Info("fob tap", "code", code, "allowed", res.Allowed,
-			"member", res.MemberName, "reason", res.Reason)
+			"member", res.MemberName, "reason", res.Reason,
+			"staged", res.StagedFilename != "", "certified", res.Certified)
 	}
 	writeJSON(w, map[string]any{
-		"scanned":     true,
-		"allowed":     res.Allowed,
-		"reason":      res.Reason,
-		"member_name": res.MemberName,
+		"scanned":         true,
+		"allowed":         res.Allowed,
+		"reason":          res.Reason,
+		"member_name":     res.MemberName,
+		"staged_filename": res.StagedFilename,
+		"staged_eta":      res.StagedETA,
+		"certified":       res.Certified,
 	})
 }
 
@@ -179,96 +182,64 @@ func (a *Agent) handleIndex(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *Agent) handleSubmit(w http.ResponseWriter, r *http.Request) {
+// handleLoad is the fob-release: the member tapped, and their staged print is
+// pulled from the portal and written to the gadget. No file is uploaded here —
+// that already happened on the portal.
+func (a *Agent) handleLoad(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 600<<20)
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
-		a.render(w, r, pageData{Error: "Upload was too large or malformed."})
-		return
-	}
-	defer func() {
-		if r.MultipartForm != nil {
-			_ = r.MultipartForm.RemoveAll()
-		}
-	}()
 
-	// Identity is the fob the agent read itself — the browser never handles the
-	// code, and there is no other way to identify.
-	fobCode, ok := a.scanner.CurrentCode()
+	// Identity is the fob the agent read itself — the browser never handles it.
+	code, ok := a.scanner.CurrentCode()
 	if !ok {
-		a.render(w, r, pageData{Error: "Tap your Tinkermill fob on the reader, then submit."})
+		a.render(w, r, pageData{Error: "Tap your Tinkermill fob on the reader, then load."})
 		return
 	}
 
-	file, hdr, err := r.FormFile("file")
+	claim, err := a.central.ClaimStagedJob(r.Context(), code)
 	if err != nil {
-		a.render(w, r, pageData{Error: "Choose a sliced file to upload."})
+		a.log.Error("claim from central failed", "err", err)
+		a.render(w, r, pageData{Error: "Couldn't reach the print portal. Nothing was loaded."})
 		return
 	}
-	defer file.Close()
-
-	// Stage the upload under its real (sanitized) name inside a temp dir, so
-	// the file lands on the gadget with the exact filename — and extension —
-	// the printer expects, not a scratch name.
-	origName := sanitizeFilename(hdr.Filename)
-	if origName == "" {
-		origName = "print.bin"
+	if !claim.Claimed {
+		a.render(w, r, pageData{Error: denyMessage(claim.Reason)})
+		return
 	}
+
 	tmpDir, err := os.MkdirTemp("", "piagent-")
 	if err != nil {
 		a.render(w, r, pageData{Error: "Pi is out of scratch space."})
 		return
 	}
 	defer os.RemoveAll(tmpDir)
-	stagedPath := filepath.Join(tmpDir, origName)
-	staged, err := os.Create(stagedPath)
-	if err != nil {
-		a.render(w, r, pageData{Error: "Pi is out of scratch space."})
-		return
+	name := sanitizeFilename(claim.Filename)
+	if name == "" {
+		name = "print.bin"
 	}
-	if _, err := io.Copy(staged, file); err != nil {
-		staged.Close()
-		a.render(w, r, pageData{Error: "Upload interrupted."})
-		return
-	}
-	staged.Close()
+	dst := filepath.Join(tmpDir, name)
 
-	// Which checklist boxes were ticked.
-	cfg, _ := a.central.FetchConfig(r.Context())
-	checked := make([]bool, len(cfg.SafetyChecklist))
-	for i := range checked {
-		checked[i] = r.FormValue("check_"+strconv.Itoa(i)) != ""
-	}
-
-	res, err := a.central.SubmitPrint(r.Context(), fobCode, origName, stagedPath, checked)
-	if err != nil {
-		a.log.Error("submit to central failed", "err", err)
-		a.render(w, r, pageData{Error: "Couldn't reach the print portal. Nothing was sent to the printer."})
-		return
-	}
-	if !res.Approved {
-		a.render(w, r, pageData{Error: denyMessage(res.Reason)})
+	if _, err := a.central.DownloadJobFile(r.Context(), claim.JobID, claim.SHA256, dst); err != nil {
+		a.log.Error("download staged file failed", "err", err, "job", claim.JobID)
+		a.render(w, r, pageData{Error: "The download from the portal failed or was corrupt. Try again in a moment."})
 		return
 	}
 
-	if err := a.gadget.Write(r.Context(), stagedPath); err != nil {
+	if err := a.gadget.Write(r.Context(), dst); err != nil {
 		a.log.Error("gadget write failed", "err", err)
-		a.render(w, r, pageData{Error: "The portal approved your file but writing it to the printer's drive failed. Ask a staff member."})
+		a.render(w, r, pageData{Error: "Loading the file onto the printer's drive failed. Ask a staff member."})
 		return
 	}
-	if err := a.central.JobStarted(r.Context(), res.JobID); err != nil {
-		a.log.Warn("job started callback failed", "err", err, "job", res.JobID)
+	if err := a.central.JobStarted(r.Context(), claim.JobID); err != nil {
+		a.log.Warn("job started callback failed", "err", err, "job", claim.JobID)
 	}
-	if a.scanner != nil {
-		a.scanner.Clear() // next member starts fresh
-	}
+	a.scanner.Clear() // next member starts fresh
 
-	msg := "Your file is on the printer. Start the print from the printer's screen."
-	if res.MachineWarning != "" {
-		msg += " Heads up: " + res.MachineWarning + "."
+	msg := "Loaded " + name + " onto the printer. Start the print from the printer's screen."
+	if claim.MachineWarning != "" {
+		msg += " Heads up: " + claim.MachineWarning + "."
 	}
 	http.Redirect(w, r, "/?msg="+urlEncode(msg), http.StatusFound)
 }
@@ -312,6 +283,10 @@ func denyMessage(reason string) string {
 		return "This printer is still waiting for a makerspace admin to approve it in the portal."
 	case "unknown_fob":
 		return "That fob isn't linked to an active Tinkermill member. Check with the front desk that your membership and fob are current."
+	case "no_staged_job":
+		return "No queued print for you on this printer. Upload one on the portal first, then tap again."
+	case "certification_recorded":
+		return "You're now certified for this printer."
 	default:
 		return "The portal declined this print (" + reason + ")."
 	}

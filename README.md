@@ -20,11 +20,10 @@ printer reads from; a central service decides who is allowed to print.
    the printer
 ```
 
-- **The Pi is thin.** `cmd/pi-agent` serves one upload page on the makerspace
-  LAN, forwards every submission to the central portal for the
-  membership + certification + safety-checklist decision, and on approval
-  writes the file onto the USB gadget via `usb-refresh.sh`. No local database,
-  no auth logic, no web app.
+- **The Pi is thin.** `cmd/pi-agent` reads the fob, shows a "tap to load your
+  queued print" page on the makerspace LAN, and on a tap pulls that member's
+  staged file from the portal and writes it onto the USB gadget via
+  `usb-refresh.sh`. No uploads, no local database, no auth logic, no web app.
 - **The central portal owns the rules.** Resin-printer certification, print-job
   tracking, the per-printer safety checklist, the audit log, and Slack posting
   all live in Postgres and are managed in one admin UI.
@@ -34,9 +33,16 @@ printer reads from; a central service decides who is allowed to print.
   TinkerAccess — "expired" means a member's status flipped to `I` or they
   dropped off the roster; either way the portal marks them inactive and denies
   prints until they come back.
-- **Identity is trust-based.** A member types their Tinkermill Slack display
-  name. The portal resolves it against an admin-maintained mapping, falling
-  back to a unique exact full-name match. No password, no OAuth.
+- **Uploads go to the portal, releases happen at the printer.** A member
+  uploads a sliced file on the portal's public `/upload` page (Slack display
+  name + file + safety checklist); the portal checks membership + certification,
+  parses the ETA, and holds the file. The member then walks to the printer and
+  taps their **RFID fob** — that fob-release is what pulls the file onto the
+  gadget. Physical presence is required to start a print; the big upload never
+  touches the Pi's wifi or SD card.
+- **Identity is trust-based.** Slack names are resolved against an
+  admin-maintained mapping, falling back to a unique exact full-name match; fob
+  UIDs against `members.code` from the synced roster. No password, no OAuth.
 
 ## Layout
 
@@ -208,15 +214,22 @@ ssh captain@<pi>.lan 'sudo install -m0755 ~/pi-agent-armv6 /usr/local/bin/pi-age
 Every Pi is fob-only. There is no name-entry mode and no switch for it. Wire an
 MFRC522 (13.56 MHz) to the SPI header — `SDA→GPIO8, SCK→GPIO11, MOSI→GPIO10,
 MISO→GPIO9, RST→GPIO25, 3.3V, GND` — and that's all: the agent reads it on fixed
-pins, the upload page is tap-only, the UID never touches the browser, and the
+pins, the Pi page is tap-to-load only, the UID never touches the browser, and the
 **portal** matches the UID against `members.code` in every format it could have
 been recorded as (hex, colon-hex, decimal either endianness). The agent **won't
 start** if the reader isn't working.
 
 Every tap is checked against the portal once (`/check` → a `decision_log` row),
 so who tapped what and when is queryable in the admin **Log** — the tap audit
-trail lives centrally, not on the Pi. `sudo pi-agent -probe` prints what the
-reader sees, a wiring diagnostic only.
+trail lives centrally, not on the Pi. `sudo pi-agent -probe` is the wiring
+diagnostic: it reports the SPI link, chip version, antenna state, and per-tap
+outcome (no card / card present but stage X failed / decoded UID). Note the
+MFRC522 is **13.56 MHz only** — a 125 kHz fob will never read.
+
+**Certify by tap.** On the admin **Certifications** page, "Certify by tap" arms
+a 2-minute window on a printer; the next fob tapped there certifies that member
+for it (recorded in the log as `captured_certification`). No searching the
+roster — the trainee just taps.
 
 ## Bringing a printer online
 
@@ -227,8 +240,14 @@ reader sees, a wiring diagnostic only.
    the Pi into the printer.
 3. Admin UI → **Printers → Pending** — click **Approve** on the Pi that just
    showed up (it's keyed by hostname). This approval is the security gate.
-4. **Certifications**: certify members for that printer.
+4. **Certifications**: certify members for that printer (or use "Certify by
+   tap" and have them tap at the Pi).
 5. *(optional)* Edit the printer to set its model + allowed extensions — the
    default is "accept anything" with the standard safety checklist.
-6. Tap a certified member's fob at the Pi and confirm the page shows their name;
-   run `hw-tests/` to confirm the gadget path end-to-end.
+6. Give members the portal's `/upload` URL. They upload there, then tap their
+   fob at the Pi to load the print.
+7. Run `hw-tests/` to confirm the upload → tap → gadget path end-to-end.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

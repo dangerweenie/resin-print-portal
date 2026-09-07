@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{if .Config.DisplayName}}{{.Config.DisplayName}}{{else}}Resin Printer{{end}} — upload</title>
+<title>{{if .Config.DisplayName}}{{.Config.DisplayName}}{{else}}Resin Printer{{end}} — load a print</title>
 <style>
   :root {
     --bg:#16181c; --surface:#1c1f24; --surface-2:#23272e; --border:#2c313a;
@@ -27,24 +27,6 @@
   .flash { padding: .7rem .9rem; border-radius: 3px; margin: 1.25rem 0; font-size: .84rem; border: 1px solid transparent; }
   .flash.ok  { background: var(--ok-bg);  color: var(--ok);  border-color: var(--ok-border); }
   .flash.err { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
-  label {
-    display: block; margin: 1rem 0 .3rem;
-    font-size: .66rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
-  }
-  label .exts { color: var(--faint); text-transform: none; letter-spacing: 0; }
-  input[type=text], input[type=file] {
-    width: 100%; background: var(--surface-2); border: 1px solid var(--border);
-    color: var(--text); padding: .55rem .65rem; font: inherit; font-size: .86rem;
-    border-radius: 3px; outline: none; transition: border-color .15s ease;
-  }
-  input[type=text]:focus, input[type=file]:focus { border-color: var(--amber); }
-  input[type=file] { padding: .45rem; color: var(--text-dim); }
-  input[type=checkbox] { accent-color: var(--amber); width: 15px; height: 15px; margin-right: .5rem; vertical-align: -2px; }
-  .check { margin: .45rem 0; }
-  .check label {
-    display: inline; margin: 0; text-transform: none; letter-spacing: 0;
-    font-size: .84rem; color: var(--text-dim); cursor: pointer;
-  }
   button {
     margin-top: 1.5rem; padding: .65rem 1.4rem; font: inherit;
     font-size: .74rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
@@ -58,9 +40,9 @@
     padding: 1rem 1.15rem; margin: 1.25rem 0;
   }
   .job .jb-title { font-size: .66rem; letter-spacing: .12em; text-transform: uppercase; color: var(--amber); margin-bottom: .35rem; }
-  .job .jb-file { color: var(--text); }
-  .job button { background: transparent; color: var(--muted); border-color: var(--border); margin-top: 1rem; }
-  .job button:hover { color: var(--amber); border-color: var(--amber); opacity: 1; }
+  .job .jb-file { color: var(--text); word-break: break-all; }
+  .job.printing button { background: transparent; color: var(--muted); border-color: var(--border); margin-top: 1rem; }
+  .job.printing button:hover { color: var(--amber); border-color: var(--amber); opacity: 1; }
   .notice {
     background: var(--surface); border: 1px solid var(--border);
     border-left: 2px solid var(--amber); border-radius: 3px;
@@ -72,7 +54,7 @@
   ::selection { background: rgba(217,138,92,.28); }
   .fob {
     background: var(--surface-2); border: 1px solid var(--border);
-    border-radius: 3px; padding: 1rem 1.15rem; margin: 1rem 0;
+    border-radius: 3px; padding: 1rem 1.15rem; margin: 1.25rem 0;
     display: flex; align-items: center; gap: .8rem;
   }
   .fob .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); flex: none; }
@@ -81,18 +63,17 @@
   .fob .txt { font-size: .86rem; }
   .fob.ok .txt { color: var(--ok); }
   .fob.bad .txt { color: var(--err); }
-  button[disabled] { opacity: .4; cursor: not-allowed; }
 </style>
 </head>
 <body>
 <h1>{{if .Config.DisplayName}}{{.Config.DisplayName}}{{else}}Resin Printer{{end}}</h1>
-<div class="tag">Resin Print Portal · upload</div>
+<div class="tag">Resin Print Portal · load a print</div>
 
 {{if .Message}}<div class="flash ok">{{.Message}}</div>{{end}}
 {{if .Error}}<div class="flash err">{{.Error}}</div>{{end}}
 
 {{if .CurrentJob}}
-<div class="job">
+<div class="job printing">
   <div class="jb-title">Printing now</div>
   <div class="jb-file">{{.CurrentJob.Filename}}</div>
   <div class="muted">
@@ -110,57 +91,72 @@
 <div class="notice">
   <div class="nt-title">Waiting for approval</div>
   This printer registered itself with the portal and is waiting for a makerspace
-  admin to approve it. Nothing to do here — check back shortly, or give an admin
-  a nudge.
+  admin to approve it. Nothing to do here — check back shortly.
 </div>
 {{else}}
-<form method="post" action="/submit" enctype="multipart/form-data">
-  <label>Identify yourself</label>
-  <div class="fob" id="fob"><span class="dot"></span><span class="txt" id="fobtxt">Tap your Tinkermill fob on the reader…</span></div>
+<div class="fob" id="fob"><span class="dot"></span><span class="txt" id="fobtxt">Tap your Tinkermill fob on the reader…</span></div>
 
-  <label for="file">Sliced file{{if .Config.AllowedExtensions}}
-    <span class="exts">({{range .Config.AllowedExtensions}}{{.}} {{end}})</span>{{end}}</label>
-  <input type="file" id="file" name="file" required>
-
-  {{if .Config.SafetyChecklist}}
-  <label>Safety checklist</label>
-  {{range $i, $item := .Config.SafetyChecklist}}
-    <div class="check"><label><input type="checkbox" name="check_{{$i}}" value="1" required>{{$item}}</label></div>
-  {{end}}
-  {{end}}
-
-  <button type="submit" id="sendbtn" disabled>Send to printer</button>
+<form method="post" action="/load" id="loadform" hidden>
+  <div class="job">
+    <div class="jb-title">Ready to load</div>
+    <div class="jb-file" id="loadfile"></div>
+    <div class="muted" id="loadeta"></div>
+    <button type="submit">Load onto printer</button>
+  </div>
 </form>
 
 <hr>
-<p class="muted">The portal checks your membership and resin-printer certification before anything reaches the printer.</p>
+<p class="muted">
+  Upload your sliced file on the portal first, then tap your fob here to load it.
+  Your membership and certification are checked by the portal.
+</p>
 
 <script>
 (function () {
-  var fob = document.getElementById('fob'), txt = document.getElementById('fobtxt'),
-      btn = document.getElementById('sendbtn');
-  function setBtn() { btn.disabled = !fob.classList.contains('ok'); }
+  var fob = document.getElementById('fob'),
+      txt = document.getElementById('fobtxt'),
+      form = document.getElementById('loadform'),
+      fileEl = document.getElementById('loadfile'),
+      etaEl = document.getElementById('loadeta');
+
+  var reasons = {
+    unknown_fob: 'That fob isn’t linked to an active member.',
+    not_certified: 'You’re not certified for this printer.',
+    membership_inactive: 'Your membership isn’t active.',
+    printer_pending_approval: 'This printer is awaiting admin approval.',
+    portal_unreachable: 'Can’t reach the portal right now.'
+  };
+
   async function poll() {
     try {
-      var r = await fetch('/scan', {cache: 'no-store'});
-      var s = await r.json();
+      var s = await (await fetch('/scan', {cache: 'no-store'})).json();
       fob.classList.remove('ok', 'bad');
+      form.hidden = true;
+
       if (!s.scanned) {
         txt.textContent = 'Tap your Tinkermill fob on the reader…';
-      } else if (s.allowed) {
-        fob.classList.add('ok');
-        txt.textContent = 'Tapped: ' + (s.member_name || 'member') + ' ✓';
-      } else {
-        fob.classList.add('bad');
-        txt.textContent = ({
-          unknown_fob: 'That fob isn’t linked to an active member.',
-          not_certified: 'You’re not certified for this printer.',
-          membership_inactive: 'Your membership isn’t active.',
-          printer_pending_approval: 'This printer is awaiting admin approval.',
-          portal_unreachable: 'Can’t reach the portal right now.'
-        }[s.reason]) || ('Fob not accepted (' + (s.reason || 'unknown') + ').');
+        return;
       }
-      setBtn();
+      if (s.certified) {
+        fob.classList.add('ok');
+        txt.textContent = (s.member_name || 'You') + ' — certified for this printer ✓';
+        return;
+      }
+      if (!s.allowed) {
+        fob.classList.add('bad');
+        txt.textContent = reasons[s.reason] || ('Fob not accepted (' + (s.reason || 'unknown') + ').');
+        return;
+      }
+      fob.classList.add('ok');
+      if (s.staged_filename) {
+        txt.textContent = 'Tapped: ' + (s.member_name || 'member') + ' ✓';
+        fileEl.textContent = s.staged_filename;
+        etaEl.textContent = s.staged_eta ? ('print time ~' + s.staged_eta) : '';
+        form.hidden = false;
+      } else {
+        txt.textContent = 'Tapped: ' + (s.member_name || 'member') +
+          ' ✓ — no queued print. Upload one on the portal.';
+      }
     } catch (e) { /* keep last state */ }
   }
   poll(); setInterval(poll, 1500);

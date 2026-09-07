@@ -189,31 +189,44 @@ func (m *MFRC522) SelfTest() error {
 
 // --- card reading -------------------------------------------------------
 
+// ReadReg exposes one register read for the -probe diagnostic.
+func (m *MFRC522) ReadReg(a byte) (byte, error) { return m.readReg(a) }
+
 // ReadUID performs REQA + anti-collision and returns the card UID (4, 7, or 10
 // bytes). ErrNoCard when the field is empty.
 func (m *MFRC522) ReadUID() ([]byte, error) {
-	if err := m.requestA(); err != nil {
-		return nil, ErrNoCard
-	}
-	uid, err := m.anticollisionCascade(piccSelCL1)
+	_, uid, stage, err := m.ProbeRead()
 	if err != nil {
+		if stage == "REQA" { // no card answered the request — the normal idle case
+			return nil, ErrNoCard
+		}
 		return nil, err
 	}
 	return uid, nil
 }
 
-func (m *MFRC522) requestA() error {
-	if err := m.writeReg(regBitFraming, 0x07); err != nil { // TxLastBits = 7 (a short frame)
-		return err
+// ProbeRead is ReadUID broken into reportable stages, for the -probe wiring
+// diagnostic. On full success stage is "" and err is nil; otherwise stage names
+// the step that failed ("REQA", "ATQA", "anti-collision"). atqa is filled once
+// a card has answered REQA, so the caller can tell "no card" from "card present
+// but the driver can't enumerate it".
+func (m *MFRC522) ProbeRead() (atqa, uid []byte, stage string, err error) {
+	if err = m.writeReg(regBitFraming, 0x07); err != nil { // TxLastBits = 7 (short frame)
+		return nil, nil, "setup", err
 	}
 	back, _, err := m.transceive([]byte{piccReqA}, 0x07)
 	if err != nil {
-		return err
+		return nil, nil, "REQA", err
 	}
+	atqa = back
 	if len(back) != 2 { // ATQA is 2 bytes
-		return fmt.Errorf("rfid: unexpected ATQA length %d", len(back))
+		return atqa, nil, "ATQA", fmt.Errorf("got %d bytes, want 2", len(back))
 	}
-	return nil
+	uid, err = m.anticollisionCascade(piccSelCL1)
+	if err != nil {
+		return atqa, nil, "anti-collision", err
+	}
+	return atqa, uid, "", nil
 }
 
 // anticollisionCascade resolves a full UID, following cascade levels for

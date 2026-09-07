@@ -45,6 +45,19 @@ so systemd (`Restart=always`) relaunches; `pi/agent-guard.sh` (`ExecStartPre`)
 rolls back on a crash-loop. All update state is in `/var/lib/resin-pi-agent`,
 never the boot partition — still nothing configured per Pi.
 
+**Uploads moved to the portal (2026-09-03):** members no longer upload to the
+Pi. They upload on the portal's public `/upload` (Slack name + file + checklist
+→ `store.StageJob`, bytes held in the `staged_files` Postgres table, job
+`status='staged'`, migration `00003`). At the printer the fob tap hits
+`POST /api/v1/printers/{slug}/claim` → `ClaimStagedJob` promotes it to
+`printing` and the Pi pulls the file from `GET …/jobs/{id}/file`, writes the
+gadget, calls `/started` (which drops the bytes). The Pi's page is now
+tap-to-load only — no file input (`internal/piagent` lost `handleSubmit`/
+`SubmitPrint`, gained `handleLoad`/`ClaimStagedJob`/`DownloadJobFile`). Also
+**certify-by-tap**: admin arms a 2-min window on the Certifications page
+(`printers.cert_capture_until/by`), the next fob at `/check` is certified
+(`ConsumeCertCapture`, atomic, one-shot; logged `captured_certification`).
+
 The USB-gadget half of the system below is unchanged and still load-bearing —
 `usb-refresh.sh`, `piusb-gadget.service`, the `config.txt` dtoverlay, and all
 the printer-firmware findings still apply exactly. Only the "what decides who

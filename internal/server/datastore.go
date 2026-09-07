@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/dangerweenie/resin-print-portal/internal/store"
 )
@@ -50,6 +51,18 @@ type DataStore interface {
 	GetJob(ctx context.Context, printerID, jobID int64) (store.PrintJob, error)
 	RecentJobs(ctx context.Context, printerID int64, limit int) ([]store.JobView, error)
 	AllRecentJobs(ctx context.Context, limit int) ([]store.JobView, error)
+
+	// portal-staged uploads
+	StageJob(ctx context.Context, j store.PrintJob, fileBytes []byte, sha string) (store.PrintJob, error)
+	PeekStagedJob(ctx context.Context, printerID, memberID int64) (store.PrintJob, error)
+	ClaimStagedJob(ctx context.Context, printerID, memberID int64) (store.PrintJob, store.StagedMeta, error)
+	GetJobFileBytes(ctx context.Context, jobID int64) ([]byte, string, error)
+	DiscardJobFile(ctx context.Context, jobID int64) error
+
+	// certify-by-tap capture
+	ArmCertCapture(ctx context.Context, printerID int64, by string, until time.Time) error
+	DisarmCertCapture(ctx context.Context, printerID int64) error
+	ConsumeCertCapture(ctx context.Context, printerID int64) (by string, armed bool, err error)
 
 	// decision log
 	LogDecision(ctx context.Context, e store.DecisionLogEntry) error

@@ -86,6 +86,10 @@ postgresql:
   primary:
     persistence:
       enabled: true
+      # Members upload sliced files to the portal; each is held in Postgres
+      # (staged_files) until the Pi pulls it, then deleted. Budget for one
+      # staged + one in-flight file per printer (~100–300 MB each) on top of
+      # the roster/jobs/audit data.
       size: 10Gi
 
 externalDatabase:

@@ -81,6 +81,7 @@ func (s *Server) parseTemplates() error {
 	pages := []string{
 		"login.html", "members.html", "printers.html", "printer_edit.html",
 		"certifications.html", "jobs.html", "log.html", "settings.html",
+		"portal_upload.html",
 	}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
@@ -109,13 +110,19 @@ func (s *Server) Router() http.Handler {
 		r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	}
 
+	// Members upload here, not to the Pi. Public (identity is the Slack name,
+	// checked against the roster) — same trust model the Pi page used.
+	r.Get("/upload", s.handleUploadForm)
+	r.Post("/upload", s.handleUploadSubmit)
+
 	// Pi-facing API — bearer auth per printer.
 	r.Route("/api/v1/printers/{slug}", func(r chi.Router) {
 		r.Use(s.printerAuth)
 		r.Get("/config", s.handlePrinterConfig)
 		r.Post("/check", s.handleCheck)
-		r.Post("/print-requests", s.handlePrintRequest)
+		r.Post("/claim", s.handleClaim)
 		r.Get("/current-job", s.handleCurrentJob)
+		r.Get("/jobs/{id}/file", s.handleJobFile)
 		r.Post("/jobs/{id}/started", s.handleJobStarted)
 		r.Post("/jobs/{id}/finished", s.handleJobFinished)
 		r.Get("/agent-update", s.handleAgentUpdate)
@@ -152,6 +159,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/printers/{id}/agent-update", s.handlePrinterAgentUpdate)
 			r.Get("/certifications", s.handleCertifications)
 			r.Post("/certifications", s.handleCertifyToggle)
+			r.Post("/certifications/capture", s.handleCertCapture)
 			r.Get("/jobs", s.handleJobs)
 			r.Post("/jobs/force-clear", s.handleForceClear)
 			r.Get("/log", s.handleLog)

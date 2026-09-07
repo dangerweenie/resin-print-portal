@@ -1,0 +1,56 @@
+{{define "title"}}Upload a print — Resin Print Portal{{end}}
+{{define "content"}}
+<h1>Upload a resin print</h1>
+<p class="muted">
+  Pick the printer, identify yourself, attach your sliced file, and clear the
+  safety checklist. The file is held here until you walk to the printer and tap
+  your Tinkermill fob to load it.
+</p>
+
+{{if not .Printers}}
+<p class="muted">No approved printers yet.</p>
+{{else}}
+<form method="post" action="/upload" enctype="multipart/form-data">
+  <p>
+    <label for="printer">Printer</label>
+    <select id="printer" name="printer"
+            onchange="window.location='/upload?printer='+encodeURIComponent(this.value)">
+      <option value="">— choose —</option>
+      {{range .Printers}}
+        <option value="{{.Slug}}" {{if eq .Slug $.Selected}}selected{{end}}>{{.DisplayName}} ({{.Slug}})</option>
+      {{end}}
+    </select>
+  </p>
+
+  <p>
+    <label for="slack_name">Tinkermill Slack display name</label>
+    <input type="text" id="slack_name" name="slack_name" value="{{.SlackName}}"
+           placeholder="jane.doe" autocomplete="off" required>
+  </p>
+
+  <p>
+    <label for="file">Sliced file{{if .Exts}}
+      <span class="muted">({{range .Exts}}{{.}} {{end}})</span>{{end}}</label>
+    <input type="file" id="file" name="file" required>
+  </p>
+
+  {{if .Checklist}}
+  <fieldset>
+    <legend>Safety checklist</legend>
+    {{range $i, $item := .Checklist}}
+      <p><label><input type="checkbox" name="check_{{$i}}" value="1" required> {{$item}}</label></p>
+    {{end}}
+  </fieldset>
+  {{else if .Selected}}
+  <p class="muted">This printer has no safety checklist configured.</p>
+  {{end}}
+
+  <p><button type="submit">Stage for the printer</button></p>
+</form>
+
+<p class="muted">
+  Your Tinkermill membership and resin-printer certification are checked now.
+  Nothing reaches a printer until you tap your fob there.
+</p>
+{{end}}
+{{end}}
