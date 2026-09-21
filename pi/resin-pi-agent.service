@@ -4,6 +4,11 @@ After=network-online.target
 Wants=network-online.target
 # The USB gadget must be loadable; usb-refresh.sh (re)loads g_mass_storage.
 After=piusb-gadget.service
+# Wait for udev to actually create the RDM6300's serial port before starting —
+# without this, a fresh boot can race the UART driver and fail with "no such
+# file or directory" on /dev/serial0 even though the wiring/config is fine.
+After=dev-serial0.device
+Wants=dev-serial0.device
 # Keep restarting long enough for agent-guard.sh (rolls back at 5 starts / 600s)
 # to act on a bad self-update before systemd's own limiter (10 / 600s) parks the
 # unit.

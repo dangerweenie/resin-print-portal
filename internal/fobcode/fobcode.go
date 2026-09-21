@@ -13,10 +13,24 @@ import (
 // Variants renders a UID every way we know how: uppercase/lowercase hex (with
 // and without colons) and big-/little-endian decimal. The Pi only ever sends
 // canonical uppercase hex; the portal expands to all of these and matches.
+//
+// A 5-byte UID is treated as an EM4100 tag (what the RDM6300 reads): its first
+// byte is conventionally a manufacturer/site byte, and many access systems
+// print or store only the remaining 4-byte card number as decimal. So for a
+// 5-byte UID, Variants also includes every form of bytes [1:5] alongside the
+// full 5-byte forms — the portal doesn't know which one a given system used.
 func Variants(uid []byte) []string {
 	if len(uid) == 0 {
 		return nil
 	}
+	out := rawVariants(uid)
+	if len(uid) == 5 {
+		out = append(out, rawVariants(uid[1:])...)
+	}
+	return dedupe(out)
+}
+
+func rawVariants(uid []byte) []string {
 	hexUpper := strings.ToUpper(hex.EncodeToString(uid))
 	hexLower := strings.ToLower(hexUpper)
 
@@ -27,12 +41,11 @@ func Variants(uid []byte) []string {
 	cU := strings.Join(colonUpper, ":")
 	cL := strings.ToLower(cU)
 
-	out := []string{
+	return []string{
 		hexUpper, hexLower, cU, cL,
 		strconv.FormatUint(bytesToUint(uid, false), 10),
 		strconv.FormatUint(bytesToUint(uid, true), 10),
 	}
-	return dedupe(out)
 }
 
 // VariantsFromHex parses a hex UID (with or without ':' / '0x') and expands it.

@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-// cardReader is the slice of *MFRC522 the poll loop needs; tests supply a fake.
+// cardReader is the slice of the reader hardware (*EM4100Reader in
+// production) the poll loop needs; tests supply a fake.
 type cardReader interface {
 	Init() error
 	SelfTest() error
@@ -26,7 +27,7 @@ type Scan struct {
 	At   time.Time
 }
 
-// Reader polls an MFRC522 and remembers the last fob tapped, for a short window.
+// Reader polls the fob reader and remembers the last tap, for a short window.
 type Reader struct {
 	dev  cardReader
 	poll time.Duration

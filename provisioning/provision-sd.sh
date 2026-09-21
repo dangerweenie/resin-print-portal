@@ -41,8 +41,9 @@
 # --repo-root (default: parent dir of this script), --yes (device mode only —
 # skip the "type the device path to confirm" prompt).
 #
-# Every Pi is fob-only: an MFRC522 must be wired (SPI0.0 / GPIO25) and members
-# tap to identify. There is no name-entry mode and nothing to configure for it.
+# Every Pi is fob-only: an RDM6300 (125 kHz EM4100) reader must be wired to the
+# UART (GPIO14/15, via a voltage divider on its TX line) and members tap to
+# identify. There is no name-entry mode and nothing to configure for it.
 #
 # After the Pi boots it self-registers with the portal; an admin approves it
 # once under Printers → Pending. The resin-room volunteer does nothing.
@@ -99,6 +100,17 @@ if [ -z "$CENTRAL_URL" ]; then
     echo "It is the same on every card; the Pi self-registers with the portal on first boot." >&2
     exit 1
 fi
+# Catch the single most common fleet.env mistake (a bare host/IP with no
+# scheme) here, at flash time -- not after the card boots and retry-loops
+# "unsupported protocol scheme" every 15s with no obvious fix in sight.
+case "$CENTRAL_URL" in
+    http://*|https://*) ;;
+    *)
+        echo "CENTRAL_URL/--central-url must include http:// or https:// (got '$CENTRAL_URL')." >&2
+        echo "e.g. http://192.168.1.50:8080 -- a bare host/IP is what breaks enrollment." >&2
+        exit 1
+        ;;
+esac
 # ENROLL_TOKEN is optional — only set it if the portal requires one.
 
 if [ -n "$BOOT" ] && [ -n "$DEVICE" ]; then

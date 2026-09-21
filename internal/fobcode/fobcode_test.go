@@ -42,3 +42,28 @@ func TestVariantsSevenByte(t *testing.T) {
 		t.Errorf("7-byte variants = %v", v)
 	}
 }
+
+func TestVariantsFiveByteEM4100AlsoOffersLastFourBytes(t *testing.T) {
+	// uid[1:] is deliberately the same 4 bytes as TestVariants, so the known
+	// decimal forms from that test double as the expected values here.
+	got := Variants([]byte{0x01, 0xA1, 0xB2, 0xC3, 0xD4})
+	for _, want := range []string{
+		"01A1B2C3D4", // full 5-byte hex
+		"A1B2C3D4",   // dropped-leading-byte 4-byte hex (the common "card number")
+		"2712847316", // dropped-leading-byte big-endian decimal
+		"3569595041", // dropped-leading-byte little-endian decimal
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("Variants(5-byte EM4100) missing %q; got %v", want, got)
+		}
+	}
+}
+
+func TestVariantsFourByteHasNoEM4100Split(t *testing.T) {
+	// A 4-byte UID (e.g. MIFARE, kept as a generic case) must not spuriously
+	// grow a "dropped byte" variant -- that logic is 5-byte-only.
+	got := Variants([]byte{0xA1, 0xB2, 0xC3, 0xD4})
+	if slices.Contains(got, "B2C3D4") {
+		t.Errorf("4-byte UID should not produce a dropped-leading-byte variant, got %v", got)
+	}
+}

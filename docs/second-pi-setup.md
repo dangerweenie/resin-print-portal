@@ -165,16 +165,26 @@ via the sync worker.
 
 Identity is the fob and only the fob. There is no name-entry mode.
 
-- **Wire an MFRC522** (13.56 MHz, SPI) to the header: `SDA→GPIO8, SCK→GPIO11,
-  MOSI→GPIO10, MISO→GPIO9, RST→GPIO25, 3.3 V, GND`. 3.3 V only. (The Zero W
-  header is unpopulated — solder one on.) 125 kHz door fobs won't read.
-- Nothing to configure. `provision-boot.sh` sets `dtparam=spi=on`; the agent
-  reads the reader on fixed pins and sends the UID as canonical hex; the
-  **portal** matches it against `members.code` in every format. The agent
-  **won't start** without a working reader.
+TinkerMill's fobs are 125 kHz EM4100 — an MFRC522 (13.56 MHz) physically
+cannot read them; this fleet uses an **RDM6300** instead.
+
+- **Wire an RDM6300** to the UART: `5V → 5V, GND → GND`, and `TX → GPIO15 /
+  RXD (physical pin 10)` **through a voltage divider** (1kΩ from TX to the
+  RXD node, 2kΩ from that node to GND) — the reader's TX is 5V logic and the
+  Pi's GPIO is not 5V-tolerant. If it's the common blue board the antenna coil
+  is already soldered on; a bare board needs the coil soldered to ANT1/ANT2.
+- Nothing to configure. `provision-boot.sh` sets `enable_uart=1` and
+  `dtoverlay=disable-bt` (frees the real UART from Bluetooth onto GPIO14/15);
+  the agent reads `/dev/serial0` at 9600 baud, decodes the tag ID, and sends it
+  as canonical hex; the **portal** matches it against `members.code` in every
+  format (including the common "drop the leading byte" 4-byte card number).
+  The agent **won't start** without a working reader.
 - Every tap hits the portal's `/check` once and lands in `decision_log` —
   visible in the admin **Log**. That is the tap record; the Pi keeps nothing.
-- `sudo pi-agent -probe` prints what the reader sees — a wiring check only.
+- `sudo pi-agent -probe` is the wiring diagnostic: it reports whether any
+  bytes are arriving at all, whether they're framing into valid tag reads, and
+  decodes every tap it sees. Stop the running agent first
+  (`sudo systemctl stop resin-pi-agent`) so the two don't fight over the port.
 
 ## Redeploying the agent (not a fresh flash)
 Once a Pi is provisioned, pushing an agent update:
@@ -214,7 +224,7 @@ connecting to a printer):
 dtoverlay=dwc2,dr_mode=peripheral
 ```
 ```bash
-sudo dd if=/dev/zero of=/piusb.bin bs=1M count=8192 status=progress
+sudo dd if=/dev/zero of=/piusb.bin bs=1M count=1024 status=progress
 sudo mkdosfs /piusb.bin -F 32 -I -n RESINUSB
 sudo modprobe g_mass_storage file=/piusb.bin stall=0 ro=0 removable=1
 ```

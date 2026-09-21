@@ -55,17 +55,33 @@ echo "--- config.txt ---"
 CONFIG="$BOOT/config.txt"
 grep -q '^dtoverlay=dwc2,dr_mode=peripheral' "$CONFIG" || \
     printf 'dtoverlay=dwc2,dr_mode=peripheral\n' >> "$CONFIG"
+# Also frees the full PL011 UART from Bluetooth onto GPIO14/15 (/dev/serial0)
+# for the RDM6300 fob reader below -- not just a single-core resource trim.
 grep -q '^dtoverlay=disable-bt' "$CONFIG" || \
     printf 'dtoverlay=disable-bt\n' >> "$CONFIG"
 grep -q '^gpu_mem=' "$CONFIG" || \
     printf 'gpu_mem=16\n' >> "$CONFIG"
-# SPI for the optional MFRC522 RFID fob reader. Harmless if no reader is wired.
-grep -q '^dtparam=spi=on' "$CONFIG" || \
-    printf 'dtparam=spi=on\n' >> "$CONFIG"
+# UART for the RDM6300 (125 kHz EM4100) fob reader. enable_uart=1 turns the
+# UART peripheral on at all; dtoverlay=disable-bt above is what actually routes
+# it to GPIO14/15 instead of Bluetooth.
+grep -q '^enable_uart=1' "$CONFIG" || \
+    printf 'enable_uart=1\n' >> "$CONFIG"
+
+# Belt-and-suspenders: strip any leftover serial-console-over-UART kernel arg
+# so it can't fight the RDM6300 for /dev/serial0. Recent Raspberry Pi OS
+# images don't ship one, so this is normally a no-op.
+CMDLINE="$BOOT/cmdline.txt"
+if grep -qE 'console=serial0,[0-9]+ ?' "$CMDLINE"; then
+    sed -i -E 's/console=serial0,[0-9]+ ?//' "$CMDLINE"
+fi
 
 echo "--- USB gadget image ---"
 if [ ! -f /piusb.bin ]; then
-    dd if=/dev/zero of=/piusb.bin bs=1M count=8192 status=progress
+    # 1 GiB: usb-refresh.sh always wipes the drive before writing (it holds
+    # exactly one file, never more), and the portal caps a single upload at
+    # 600 MiB (internal/server.maxUploadBytes) -- real sliced files seen so
+    # far run 85-130MB. This leaves the rest of a cheap 8GB card for the OS.
+    dd if=/dev/zero of=/piusb.bin bs=1M count=1024 status=progress
     mkdosfs /piusb.bin -F 32 -I -n RESINUSB
 fi
 cp "$BOOT/payload/piusb-gadget.service" /etc/systemd/system/piusb-gadget.service

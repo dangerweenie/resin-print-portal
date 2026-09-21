@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -106,6 +107,27 @@ type PiAgent struct {
 	LogLevel       string
 }
 
+// validateCentralBaseURL rejects the single most common misconfiguration: a
+// bare host/IP with no scheme (e.g. "192.168.1.50" instead of
+// "http://192.168.1.50:8080"). Without this check the agent starts fine and
+// only fails 15s later, in a retry loop, with a cryptic
+// `unsupported protocol scheme ""` from net/http -- this catches it up front,
+// at startup, with a fix in the error message.
+func validateCentralBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("CENTRAL_BASE_URL %q is not a valid URL: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("CENTRAL_BASE_URL %q is missing an http:// or https:// scheme "+
+			"-- e.g. http://192.168.1.50:8080", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("CENTRAL_BASE_URL %q has no host", raw)
+	}
+	return nil
+}
+
 // NeedsEnrollment reports whether the agent still has to self-register.
 func (c *PiAgent) NeedsEnrollment() bool { return c.PrinterSlug == "" || c.PrinterAPIKey == "" }
 
@@ -126,6 +148,9 @@ func LoadPiAgent() (*PiAgent, error) {
 	}
 	if c.CentralBaseURL == "" {
 		return nil, fmt.Errorf("CENTRAL_BASE_URL is required")
+	}
+	if err := validateCentralBaseURL(c.CentralBaseURL); err != nil {
+		return nil, err
 	}
 
 	// Fall back to persisted credentials from a previous enrollment.

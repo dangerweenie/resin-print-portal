@@ -64,13 +64,36 @@ the printer-firmware findings still apply exactly. Only the "what decides who
 can print, and where files come from" layer changed.
 
 **Identity is the RFID fob and nothing else** — no name-entry mode, no switch.
-Every Pi has an MFRC522 on fixed pins (SPI0.0 / GPIO25); the agent won't start
-without it. `internal/rfid` is a pure-Go MFRC522 driver via `periph.io`; the Pi
-sends the UID as canonical hex and the portal (`internal/fobcode` +
-`store.ResolveRFIDCode`) matches it against `members.code` in every format.
-Nothing about the fob is configurable on the Pi. Each tap hits `/check` once
-(deduped for a held fob) and is recorded in `decision_log`. `pi-agent -probe`
-is a wiring diagnostic only.
+Every Pi has a fob reader on fixed pins; the agent won't start without it. Each
+tap hits `/check` once (deduped for a held fob) and is recorded in
+`decision_log`. `pi-agent -probe` is a wiring diagnostic only.
+
+**Reader hardware swapped to RDM6300/EM4100 (2026-09-20):** the MFRC522
+(13.56 MHz) was replaced — TinkerMill's actual fobs are 125 kHz **EM4100**,
+which an MFRC522 can never read (confirmed on hardware: `pi-agent -probe`
+decoded the board's own 13.56 MHz test card/fob cleanly but saw nothing at all
+for a real TM fob). The fleet now uses an **RDM6300**-class 125 kHz reader on
+the Pi's UART instead of SPI: `5V→5V, GND→GND, TX→(1k/2k divider)→GPIO15/RXD
+(pin 10)` — the reader's TX is 5V logic, the Pi's GPIO is not 5V-tolerant.
+`internal/rfid` is now a pure-Go UART/EM4100 frame decoder (`em4100.go`:
+STX + 10 hex chars + 2-hex XOR checksum + ETX, via `go.bug.st/serial`, no
+cgo) instead of the removed MFRC522 SPI driver (`periph.io` dropped from
+go.mod entirely); `reader.go`'s poll-loop/TTL/`Reader` API is unchanged, so
+nothing upstream of the driver noticed. `internal/fobcode.Variants` now also
+offers the last-4-bytes forms of a 5-byte UID (EM4100's leading byte is
+conventionally a site/version byte many access systems drop when printing the
+"card number") on top of the existing hex/colon/decimal-endianness forms.
+Provisioning (`provision-boot.sh`) swapped `dtparam=spi=on` for
+`enable_uart=1` (the pre-existing `dtoverlay=disable-bt`, originally added
+just to trim background services on the single-core Zero W, now does double
+duty freeing the real UART from Bluetooth onto GPIO14/15) and defensively
+strips any leftover `console=serial0,...` from `cmdline.txt`. `pi-agent -probe`
+now reports, per tap, one of: no bytes at all (wiring/power/`enable_uart`),
+bytes that never checksum (baud/level-shift/TX-RX-swap), or a decoded tag —
+much more actionable than the old MFRC522 probe's register dump. Not yet
+hardware-verified with a real RDM6300 in hand — the framing/checksum logic is
+validated by round-trip unit tests against the published protocol, not yet
+against a captured real-device frame.
 
 ## Printers on hand (test targets, in priority order)
 1. **Anycubic Photon Mono M7 Pro** — CURRENT TARGET. The picky one. Reads `.pwsz`
@@ -164,6 +187,11 @@ files fine on kernel 6.12 (newer than Bookworm even). Do not reflash/downgrade
 the kernel based on this section.**
 
 ## The working gadget recipe (verified approach)
+> `count=8192` (8 GiB) is what this bring-up session actually verified — kept
+> as-is for an accurate historical record. **The current provisioning default
+> is 1 GiB** (`provision-boot.sh`, 2026-09-21 — a cheap 8GB card needs the room
+> for the OS; `usb-refresh.sh` only ever holds one file, and the portal caps a
+> single upload at 600 MiB). Use 1 GiB, not this number, going forward.
 ```bash
 # Bare FAT32 image, NO partition table:
 sudo dd if=/dev/zero of=/piusb.bin bs=1M count=8192 status=progress

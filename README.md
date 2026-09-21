@@ -58,7 +58,7 @@ internal/
   worker/            the roster-sync loop
   piagent/           upload page + central client + gadget write
   gadget/            wraps usb-refresh.sh
-  rfid/              MFRC522 (SPI) fob reader — pure Go via periph.io
+  rfid/              RDM6300 (UART) EM4100 fob reader — pure Go
   fobcode/           UID → all string forms, for format-agnostic matching
   slack/             best-effort Incoming Webhook poster
 db/migrations/       goose SQL migrations (embedded in the binary)
@@ -211,20 +211,28 @@ ssh captain@<pi>.lan 'sudo install -m0755 ~/pi-agent-armv6 /usr/local/bin/pi-age
 
 ### Identity: RFID fob only
 
-Every Pi is fob-only. There is no name-entry mode and no switch for it. Wire an
-MFRC522 (13.56 MHz) to the SPI header — `SDA→GPIO8, SCK→GPIO11, MOSI→GPIO10,
-MISO→GPIO9, RST→GPIO25, 3.3V, GND` — and that's all: the agent reads it on fixed
-pins, the Pi page is tap-to-load only, the UID never touches the browser, and the
-**portal** matches the UID against `members.code` in every format it could have
-been recorded as (hex, colon-hex, decimal either endianness). The agent **won't
-start** if the reader isn't working.
+Every Pi is fob-only. There is no name-entry mode and no switch for it.
+TinkerMill's fobs are 125 kHz **EM4100** — an MFRC522 (13.56 MHz) can't read
+those, so the fleet uses an **RDM6300**-class reader on the UART instead: wire
+`5V→5V, GND→GND`, and `TX` **through a voltage divider** (1kΩ to the RXD node,
+2kΩ from that node to GND — the reader's TX is 5V logic, the Pi's GPIO is not
+5V-tolerant) `→ GPIO15/RXD (physical pin 10)`. That's all: the agent reads
+`/dev/serial0` at 9600 baud on fixed pins, the Pi page is tap-to-load only, the
+tag ID never touches the browser, and the **portal** matches it against
+`members.code` in every format it could have been recorded as (hex, colon-hex,
+decimal either endianness, and — since EM4100 tags carry a 5-byte ID whose
+first byte is conventionally a site/version byte — the same forms of just the
+last 4 bytes, the usual "card number"). The agent **won't start** if the
+reader isn't working.
 
 Every tap is checked against the portal once (`/check` → a `decision_log` row),
 so who tapped what and when is queryable in the admin **Log** — the tap audit
 trail lives centrally, not on the Pi. `sudo pi-agent -probe` is the wiring
-diagnostic: it reports the SPI link, chip version, antenna state, and per-tap
-outcome (no card / card present but stage X failed / decoded UID). Note the
-MFRC522 is **13.56 MHz only** — a 125 kHz fob will never read.
+diagnostic: it reports whether any bytes are arriving at all, whether they're
+framing into valid checksummed reads, and decodes every tap it sees — enough
+to tell "nothing wired" from "wired but the level shift/baud is off" from
+"working." Note this reader is **125 kHz only** — a 13.56 MHz card/fob will
+never show up.
 
 **Certify by tap.** On the admin **Certifications** page, "Certify by tap" arms
 a 2-minute window on a printer; the next fob tapped there certifies that member
@@ -236,7 +244,7 @@ roster — the trainee just taps.
 1. Deploy the portal; confirm the worker logs a roster sync (`members.code`
    comes from TinkerAccess — nothing to link for fobs).
 2. Set `CENTRAL_URL` in `provisioning/fleet.env`, flash a card
-   (`provisioning/provision-sd.sh`) — the image has an MFRC522 wired — and plug
+   (`provisioning/provision-sd.sh`) — the image has an RDM6300 wired — and plug
    the Pi into the printer.
 3. Admin UI → **Printers → Pending** — click **Approve** on the Pi that just
    showed up (it's keyed by hostname). This approval is the security gate.
