@@ -242,7 +242,13 @@ type CheckResult struct {
 	MemberName     string `json:"member_name"`
 	StagedFilename string `json:"staged_filename"`
 	StagedETA      string `json:"staged_eta"`
-	Certified      bool   `json:"certified"` // this tap consumed a certify-by-tap window
+	// JustCertified means THIS tap consumed a certify-by-tap capture window —
+	// it says nothing about whether the member is (already, ordinarily)
+	// certified. That's carried in Allowed/Reason (ReasonNotCertified) via the
+	// normal check path instead. Named JustCertified, not Certified, on
+	// purpose: the field reads as "is this member certified" otherwise, which
+	// is a different question with a different answer.
+	JustCertified bool `json:"just_certified"`
 }
 
 // CheckFob asks the portal who a tapped fob belongs to, whether they may print

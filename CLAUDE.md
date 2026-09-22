@@ -90,10 +90,54 @@ duty freeing the real UART from Bluetooth onto GPIO14/15) and defensively
 strips any leftover `console=serial0,...` from `cmdline.txt`. `pi-agent -probe`
 now reports, per tap, one of: no bytes at all (wiring/power/`enable_uart`),
 bytes that never checksum (baud/level-shift/TX-RX-swap), or a decoded tag —
-much more actionable than the old MFRC522 probe's register dump. Not yet
-hardware-verified with a real RDM6300 in hand — the framing/checksum logic is
-validated by round-trip unit tests against the published protocol, not yet
-against a captured real-device frame.
+much more actionable than the old MFRC522 probe's register dump.
+**Hardware-verified 2026-09-21**: `-probe` cleanly decodes a real RDM6300 on
+real wiring.
+
+**Taps only reached the portal if a browser had the page open (fixed
+2026-09-22):** `/check` — and everything downstream of it, including
+`decision_log` and certify-by-tap — used to fire only from `handleScan`, which
+only runs when something polls `GET /scan`; the only thing that ever polled it
+was the upload page's own JS, so a Pi nobody was looking at read fobs all day
+and reported none of it to the portal. Separately, the dedupe cache that kept
+a held fob to "one `/check` per tap" was keyed on a 30s wall clock, so a fresh
+tap of the same fob within 30s of an earlier, unrelated check silently reused
+the stale result instead of asking the portal again — this is why
+certify-by-tap needed two taps: the first was masked by a leftover cache entry
+from before the capture was armed, only the second (past the 30s window) hit
+`/check` for real. Fixed at the root, not patched: `rfid.Reader` now tracks a
+`seq` that advances only on a genuine physical event — the fob arriving after
+a real absence, or a different fob replacing it — never with elapsed time
+(`CurrentSeq`, alongside the existing TTL-based `Current`/`CurrentCode`, which
+still governs the UI's "tap, step back, submit" grace window).
+`piagent.Agent.checkFob` now dedupes on `(code, seq)` instead of a timestamp,
+so it can never confuse "still the same continuous hold" with "tapped again
+later" — and a new `Agent.WatchTaps`, running continuously from `main.go`
+independent of the HTTP server, is what actually drives every check now;
+`handleScan` just reads whatever WatchTaps already resolved. Both paths call
+the same seq-keyed `checkFob`, so calling it from two places is safe — whichever
+gets there first does the real work.
+
+**Loading is automatic now, no button (2026-09-22):** a tap that comes back
+`allowed && staged` loads onto the gadget by itself — no "Load onto printer"
+click. The safety checklist is confirmed at upload time on the portal, and
+physically presenting the fob is already the deliberate act, so a confirm
+step after that was pure friction, not safety. `POST /load` / `handleLoad` are
+gone; `checkFob` launches a detached `Agent.autoLoad(code, seq)` goroutine the
+first time a fresh presentation resolves allowed+staged (claim → download →
+gadget write → `/started`), and records the outcome (`""` / `"pending"` /
+`"loaded"` / `"failed"` + a message) keyed by that same `(code, seq)`, which
+`/scan` now also reports as `load_status`/`load_message` for the page to show
+without polling anything new. A claim that comes back empty because an
+earlier tap of the same held fob already got it (`no_staged_job`) is treated
+as benign, not an error. Same change fixed a naming bug: the `/check`
+response's `certified` field — true only when a tap consumes a certify-by-tap
+capture, never a general "is this member certified" signal — reads exactly
+like the latter and caused real confusion reading the logs. Renamed to
+`just_certified` everywhere: `CheckResult.JustCertified` (Go), `just_certified`
+(JSON field and the `"fob tap"` log key), `s.just_certified` (the Pi's JS).
+Whether a member is certified at all is carried separately, via `allowed`/
+`reason` (`not_certified`) — unchanged.
 
 ## Printers on hand (test targets, in priority order)
 1. **Anycubic Photon Mono M7 Pro** — CURRENT TARGET. The picky one. Reads `.pwsz`

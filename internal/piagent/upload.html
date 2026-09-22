@@ -96,26 +96,24 @@
 {{else}}
 <div class="fob" id="fob"><span class="dot"></span><span class="txt" id="fobtxt">Tap your Tinkermill fob on the reader…</span></div>
 
-<form method="post" action="/load" id="loadform" hidden>
-  <div class="job">
-    <div class="jb-title">Ready to load</div>
-    <div class="jb-file" id="loadfile"></div>
-    <div class="muted" id="loadeta"></div>
-    <button type="submit">Load onto printer</button>
-  </div>
-</form>
+<div class="job" id="loadjob" hidden>
+  <div class="jb-title" id="loadtitle">Loading</div>
+  <div class="jb-file" id="loadfile"></div>
+  <div class="muted" id="loadeta"></div>
+</div>
 
 <hr>
 <p class="muted">
-  Upload your sliced file on the portal first, then tap your fob here to load it.
-  Your membership and certification are checked by the portal.
+  Upload your sliced file on the portal first, then tap your fob here — a
+  waiting print loads onto the printer automatically, no extra steps.
 </p>
 
 <script>
 (function () {
   var fob = document.getElementById('fob'),
       txt = document.getElementById('fobtxt'),
-      form = document.getElementById('loadform'),
+      job = document.getElementById('loadjob'),
+      titleEl = document.getElementById('loadtitle'),
       fileEl = document.getElementById('loadfile'),
       etaEl = document.getElementById('loadeta');
 
@@ -131,13 +129,13 @@
     try {
       var s = await (await fetch('/scan', {cache: 'no-store'})).json();
       fob.classList.remove('ok', 'bad');
-      form.hidden = true;
+      job.hidden = true;
 
       if (!s.scanned) {
         txt.textContent = 'Tap your Tinkermill fob on the reader…';
         return;
       }
-      if (s.certified) {
+      if (s.just_certified) {
         fob.classList.add('ok');
         txt.textContent = (s.member_name || 'You') + ' — certified for this printer ✓';
         return;
@@ -148,14 +146,26 @@
         return;
       }
       fob.classList.add('ok');
-      if (s.staged_filename) {
-        txt.textContent = 'Tapped: ' + (s.member_name || 'member') + ' ✓';
-        fileEl.textContent = s.staged_filename;
-        etaEl.textContent = s.staged_eta ? ('print time ~' + s.staged_eta) : '';
-        form.hidden = false;
-      } else {
+      if (!s.staged_filename) {
         txt.textContent = 'Tapped: ' + (s.member_name || 'member') +
           ' ✓ — no queued print. Upload one on the portal.';
+        return;
+      }
+      txt.textContent = 'Tapped: ' + (s.member_name || 'member') + ' ✓';
+      job.hidden = false;
+      fileEl.textContent = s.staged_filename;
+      if (s.load_status === 'loaded') {
+        titleEl.textContent = 'Loaded';
+        fileEl.textContent = s.load_message || (s.staged_filename + ' is on the printer.');
+        etaEl.textContent = '';
+      } else if (s.load_status === 'failed') {
+        fob.classList.remove('ok'); fob.classList.add('bad');
+        titleEl.textContent = 'Load failed';
+        fileEl.textContent = s.load_message || 'Ask a staff member.';
+        etaEl.textContent = '';
+      } else {
+        titleEl.textContent = 'Loading onto the printer…';
+        etaEl.textContent = s.staged_eta ? ('print time ~' + s.staged_eta) : '';
       }
     } catch (e) { /* keep last state */ }
   }

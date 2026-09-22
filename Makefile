@@ -91,6 +91,10 @@ run-worker: build ## Run the roster-sync worker (needs a reachable TinkerAccess;
 	SYNC_INTERVAL=1m LOG_LEVEL=debug \
 	bin/portal worker
 
+.PHONY: fake-tinkeraccess
+fake-tinkeraccess: ## Stand-in TinkerAccess for local dev/bring-up. e.g. make fake-tinkeraccess CODE=5307BF0C
+	go run ./cmd/fake-tinkeraccess -addr=:3000 -code="$(CODE)" -name="$(or $(NAME),Test Member)"
+
 .PHONY: docker
 docker: ## Build the container image (portal + the pi-agent binary it serves)
 	docker build -f build/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) .

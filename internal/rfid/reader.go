@@ -34,9 +34,11 @@ type Reader struct {
 	ttl  time.Duration
 	log  *slog.Logger
 
-	mu       sync.Mutex
-	last     *Scan
-	warnedRd bool // first read error is logged loudly; the rest are Debug
+	mu        sync.Mutex
+	last      *Scan
+	warnedRd  bool // first read error is logged loudly; the rest are Debug
+	hwPresent bool // true only while THIS instant's hardware read succeeded — no TTL grace
+	seq       int  // increments each time a genuinely new presentation begins (see CurrentSeq)
 }
 
 // NewReader builds a Reader. A tapped fob stays "current" for ttl so a member
@@ -72,7 +74,10 @@ func (r *Reader) Run(ctx context.Context) error {
 		case <-t.C:
 			uid, err := r.dev.ReadUID()
 			if errors.Is(err, ErrNoCard) {
-				continue // TTL handles expiry; no card is normal
+				r.mu.Lock()
+				r.hwPresent = false // real-time absence, no TTL grace (see CurrentSeq)
+				r.mu.Unlock()
+				continue // TTL handles UI-facing expiry; no card is normal
 			}
 			if err != nil {
 				// A real protocol error (not just "no card"): surface the first
@@ -87,8 +92,16 @@ func (r *Reader) Run(ctx context.Context) error {
 				continue
 			}
 			r.warnedRd = false
+			code := strings.ToUpper(hex.EncodeToString(uid))
 			r.mu.Lock()
-			r.last = &Scan{UID: uid, Code: strings.ToUpper(hex.EncodeToString(uid)), At: time.Now()}
+			// A "fresh presentation" is either the fob just arriving after a
+			// real absence, or a different fob replacing it outright — not
+			// merely the same fob still sitting there since the last poll.
+			if !r.hwPresent || r.last == nil || r.last.Code != code {
+				r.seq++
+			}
+			r.hwPresent = true
+			r.last = &Scan{UID: uid, Code: code, At: time.Now()}
 			r.mu.Unlock()
 		}
 	}
@@ -110,8 +123,27 @@ func (r *Reader) CurrentCode() (string, bool) {
 	return s.Code, ok
 }
 
+// CurrentSeq returns the current tap's code (same TTL-based rule as
+// CurrentCode) plus a sequence number that only advances when a genuinely new
+// physical presentation begins. It exists so a caller can dedupe "checked
+// this already" correctly: the TTL above deliberately keeps a tap "current"
+// for a few seconds after the fob is physically removed (so a member can tap,
+// step back, and act on it), so wall-clock time alone can't tell "still the
+// one continuous hold" from "removed and tapped again" — the seq can, because
+// it only moves when the hardware itself reports a real gap or a different
+// fob, never merely with the passage of time.
+func (r *Reader) CurrentSeq() (code string, seq int, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.last == nil || time.Since(r.last.At) > r.ttl {
+		return "", r.seq, false
+	}
+	return r.last.Code, r.seq, true
+}
+
 // Clear forgets the current tap — call it after a submit so the next member
-// starts fresh.
+// starts fresh. Also guarantees the next presentation (even of the same
+// fob, still resting on the reader) is treated as new by CurrentSeq.
 func (r *Reader) Clear() {
 	r.mu.Lock()
 	r.last = nil

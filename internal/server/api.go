@@ -76,7 +76,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 			s.logDecision(r, &p.ID, cap, "", who)
 			s.writeJSON(w, http.StatusOK, map[string]any{
 				"allowed": false, "reason": ReasonJustCertified,
-				"member_name": d.Member.Name, "certified": true,
+				"member_name": d.Member.Name, "just_certified": true,
 			})
 			return
 		}

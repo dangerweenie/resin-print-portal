@@ -133,10 +133,20 @@ echo "$SCAN" | grep -q '"staged_filename":"hwtest.goo"' \
     && pass "Pi /scan shows the staged job after the tap" \
     || fail "Pi never saw the staged job (tapped? reader working? — try: sudo pi-agent -probe)"
 
-LOAD=$(curl -s -L -X POST "$AGENT_URL/load")
-echo "$LOAD" | grep -qi "onto the printer" \
-    && pass "agent loaded the staged file onto the gadget" \
-    || fail "agent did not confirm load; response: $(echo "$LOAD" | tr -d '\n' | head -c 300)"
+# The tap itself is the release now — no button, no POST. checkFob already
+# kicked off the load in the background the moment the check above came back
+# allowed+staged; just wait for it to land.
+printf '    waiting for the auto-load to finish'
+for _ in $(seq 1 40); do
+    SCAN=$(curl -s "$AGENT_URL/scan")
+    echo "$SCAN" | grep -q '"load_status":"loaded"' && break
+    echo "$SCAN" | grep -q '"load_status":"failed"' && break
+    printf '.'; sleep 1
+done
+echo
+echo "$SCAN" | grep -q '"load_status":"loaded"' \
+    && pass "agent auto-loaded the staged file onto the gadget" \
+    || fail "agent did not confirm load; response: $(echo "$SCAN" | tr -d '\n' | head -c 300)"
 
 # --- 3. central shows the job --------------------------------------
 CUR=$(api /current-job)

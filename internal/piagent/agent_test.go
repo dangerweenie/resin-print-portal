@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeGadget struct {
@@ -19,8 +20,9 @@ type fakeGadget struct {
 func (f *fakeGadget) Write(_ context.Context, src string) error { f.wrote = src; return f.err }
 func (f *fakeGadget) Clear(context.Context) error               { f.cleared = true; return f.err }
 
-// deniedClaimCentral answers /check and /claim with a denial.
-func deniedClaimCentral(t *testing.T, reason string) *httptest.Server {
+// scanCentral serves /check and /claim with independently configurable
+// bodies, for exercising the automatic check-then-load path.
+func scanCentral(t *testing.T, checkBody, claimBody string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/printers/resin/config", func(w http.ResponseWriter, _ *http.Request) {
@@ -30,51 +32,67 @@ func deniedClaimCentral(t *testing.T, reason string) *httptest.Server {
 		_, _ = w.Write([]byte(`{"current_job":null}`))
 	})
 	mux.HandleFunc("/api/v1/printers/resin/check", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"allowed":false,"reason":"` + reason + `"}`))
+		_, _ = w.Write([]byte(checkBody))
 	})
 	mux.HandleFunc("/api/v1/printers/resin/claim", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"claimed":false,"reason":"` + reason + `"}`))
+		_, _ = w.Write([]byte(claimBody))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-func TestLoadDeniedDoesNotWriteGadget(t *testing.T) {
-	srv := deniedClaimCentral(t, "not_certified")
+func TestDeniedTapNeverAutoLoads(t *testing.T) {
+	srv := scanCentral(t,
+		`{"allowed":false,"reason":"not_certified"}`,
+		`{"claimed":false,"reason":"not_certified"}`)
 	g := &fakeGadget{}
 	sc := &fakeScanner{}
 	sc.set("DEADBEEF")
 	a := New(NewCentralClient(srv.URL, "resin", "k"), g, sc, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	rec := httptest.NewRecorder()
-	a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/load", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (re-rendered page)", rec.Code)
+	a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/scan", nil))
+	if !strings.Contains(rec.Body.String(), `"allowed":false`) {
+		t.Fatalf("scan response = %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "not certified") {
-		t.Errorf("expected a friendly not-certified message, got: %s", rec.Body.String())
-	}
+	time.Sleep(50 * time.Millisecond) // a denied check never launches autoLoad; nothing to wait for
 	if g.wrote != "" {
-		t.Error("gadget.Write must NOT be called on a denied claim")
+		t.Error("gadget.Write must NOT be called for a denied tap")
 	}
 }
 
-func TestLoadWithNoStagedJob(t *testing.T) {
-	srv := deniedClaimCentral(t, "no_staged_job")
+// TestAutoLoadClaimRaceIsBenign covers the check-said-yes-but-claim-says-no
+// race (e.g. an earlier tap of the same held fob already claimed it): it must
+// not write the gadget and must not surface it as an error.
+func TestAutoLoadClaimRaceIsBenign(t *testing.T) {
+	srv := scanCentral(t,
+		`{"allowed":true,"member_name":"Ada","staged_filename":"job.goo"}`,
+		`{"claimed":false,"reason":"no_staged_job"}`)
 	g := &fakeGadget{}
 	sc := &fakeScanner{}
 	sc.set("CAFE1234")
+	code, seq, _ := sc.CurrentSeq()
 	a := New(NewCentralClient(srv.URL, "resin", "k"), g, sc, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	rec := httptest.NewRecorder()
-	a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/load", nil))
-	if g.wrote != "" {
-		t.Error("nothing to load — gadget.Write must not run")
+	a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/scan", nil))
+	if !strings.Contains(rec.Body.String(), `"load_status":"pending"`) {
+		t.Fatalf("expected a pending load right after a staged+allowed tap: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "No queued print") {
-		t.Errorf("expected the no-queued-print message, got: %s", rec.Body.String())
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if status, _ := a.getLoadState(code, seq); status != "pending" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status, msg := a.getLoadState(code, seq); status != "" {
+		t.Errorf("claim race should settle back to nothing-to-show, got status=%q msg=%q", status, msg)
+	}
+	if g.wrote != "" {
+		t.Error("gadget.Write must NOT run when the claim finds nothing staged")
 	}
 }
 

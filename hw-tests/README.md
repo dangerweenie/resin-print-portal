@@ -101,7 +101,10 @@ uploads it, and actually leave when they're done." It:
 3. uploads it to the **central portal** `/upload` (checklist ticked, as the
    certified test member's Slack name) — members no longer upload to the Pi;
 4. prompts you to **tap the test member's fob** at the Pi, polls the agent's
-   `/scan` until it reports the staged job, then `POST`s `/load`;
+   `/scan` until it reports the staged job, then keeps polling until it
+   reports `load_status:"loaded"` — the tap itself is the release; the agent
+   auto-loads in the background the moment a check comes back allowed+staged,
+   no button, no second request;
 5. asserts the central `/current-job` now shows `hwtest.goo` and parsed its
    ETA as exact;
 6. unloads the real `/piusb.bin` over SSH, mounts it, and asserts it holds

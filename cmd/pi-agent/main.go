@@ -83,6 +83,10 @@ func main() {
 	agent := piagent.New(central, g, reader, log)
 	log.Info("fob reader ready")
 
+	// Check every tap against the portal on its own, regardless of whether
+	// anyone has the upload page open — see WatchTaps.
+	go agent.WatchTaps(ctx)
+
 	hs := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           agent.Handler(),

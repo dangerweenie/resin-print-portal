@@ -74,6 +74,60 @@ func TestReaderClear(t *testing.T) {
 	}
 }
 
+func TestCurrentSeqStableWhileContinuouslyHeld(t *testing.T) {
+	dev := &fakeDev{uid: []byte{1, 2, 3, 4}}
+	r := newTestReader(dev)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = r.Run(ctx) }()
+
+	waitFor(t, 500*time.Millisecond, func() bool { _, _, ok := r.CurrentSeq(); return ok }, "initial tap")
+	_, seq1, _ := r.CurrentSeq()
+
+	// Several more poll cycles of the SAME fob sitting there must not bump seq
+	// -- this is exactly what stops a held fob from being re-checked (and
+	// re-logged, and re-consuming a certify-by-tap capture) on every poll.
+	time.Sleep(40 * time.Millisecond)
+	_, seq2, ok := r.CurrentSeq()
+	if !ok {
+		t.Fatal("fob should still read as current")
+	}
+	if seq2 != seq1 {
+		t.Errorf("seq changed from %d to %d while the same fob was continuously held", seq1, seq2)
+	}
+}
+
+func TestCurrentSeqAdvancesOnRemovalAndRetap(t *testing.T) {
+	dev := &fakeDev{}
+	r := newTestReader(dev)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = r.Run(ctx) }()
+
+	dev.put([]byte{5, 5, 5, 5})
+	waitFor(t, 500*time.Millisecond, func() bool { _, _, ok := r.CurrentSeq(); return ok }, "first tap")
+	_, seq1, _ := r.CurrentSeq()
+
+	// Physically removed, then the SAME fob is presented again. Even though
+	// CurrentCode/Current would still say "current" throughout (the TTL
+	// deliberately lingers well past this), CurrentSeq must treat this as a
+	// brand new presentation -- this is the bug that let certify-by-tap (and
+	// any other consumer keyed on "already handled this code") silently reuse
+	// a stale result across two distinct taps.
+	dev.put(nil)
+	waitFor(t, 200*time.Millisecond, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return !r.hwPresent
+	}, "hardware to register the fob as gone")
+	dev.put([]byte{5, 5, 5, 5})
+
+	waitFor(t, 500*time.Millisecond, func() bool {
+		_, seq, ok := r.CurrentSeq()
+		return ok && seq != seq1
+	}, "seq to advance on the second physical presentation")
+}
+
 func TestReaderRunFailsWhenHardwareDown(t *testing.T) {
 	r := newTestReader(&fakeDev{fail: io.ErrUnexpectedEOF})
 	if err := r.Run(context.Background()); err == nil {

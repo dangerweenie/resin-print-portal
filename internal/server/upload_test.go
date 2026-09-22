@@ -148,8 +148,8 @@ func TestCheckConsumesCertCapture(t *testing.T) {
 
 	var resp map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	if resp["certified"] != true || resp["reason"] != ReasonJustCertified {
-		t.Fatalf("check resp = %+v, want certified:true certification_recorded", resp)
+	if resp["just_certified"] != true || resp["reason"] != ReasonJustCertified {
+		t.Fatalf("check resp = %+v, want just_certified:true certification_recorded", resp)
 	}
 	if len(fs.certifyCalls) != 1 || fs.certifyCalls[0][0] != 3 || fs.certifyCalls[0][1] != 7 {
 		t.Fatalf("Certify calls = %v, want one for member 3 / printer 7", fs.certifyCalls)
