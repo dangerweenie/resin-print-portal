@@ -17,6 +17,7 @@ import (
 	"github.com/dangerweenie/resin-print-portal/internal/buildinfo"
 	"github.com/dangerweenie/resin-print-portal/internal/config"
 	"github.com/dangerweenie/resin-print-portal/internal/gadget"
+	"github.com/dangerweenie/resin-print-portal/internal/indicator"
 	"github.com/dangerweenie/resin-print-portal/internal/piagent"
 	"github.com/dangerweenie/resin-print-portal/internal/rfid"
 )
@@ -82,6 +83,15 @@ func main() {
 	g := gadget.New(cfg.RefreshScript, cfg.GadgetImage)
 	agent := piagent.New(central, g, reader, log)
 	log.Info("fob reader ready")
+
+	// Green/red LED + buzzer feedback at the printer — cosmetic, not identity:
+	// log and carry on without it if the hardware isn't wired up.
+	if lights, err := indicator.Open(); err != nil {
+		log.Warn("tap indicator (LEDs/buzzer) unavailable — running without it", "err", err)
+	} else {
+		agent.SetIndicator(lights)
+		defer lights.Close()
+	}
 
 	// Check every tap against the portal on its own, regardless of whether
 	// anyone has the upload page open — see WatchTaps.

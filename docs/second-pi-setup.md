@@ -186,6 +186,15 @@ cannot read them; this fleet uses an **RDM6300** instead.
   decodes every tap it sees. Stop the running agent first
   (`sudo systemctl stop resin-pi-agent`) so the two don't fight over the port.
 
+## 5. Tap feedback: green/red LEDs + buzzer (optional)
+
+Not required — the agent runs the same with or without this wired up, it just
+won't light anything. If you want it: green LED on GPIO17 (pin 11, via
+~330Ω), red LED on GPIO22 (pin 15, via ~330Ω), a bare 2-pin piezo buzzer
+straight onto GPIO18 (pin 12 — that's the hardware PWM0 pin, no transistor or
+power pin needed for the piezo), shared GND on pin 14. Green + a beep on a
+tap that loads a file; red (no beep) on a denied tap or a failed load.
+
 ## Redeploying the agent (not a fresh flash)
 Once a Pi is provisioned, pushing an agent update:
 ```bash

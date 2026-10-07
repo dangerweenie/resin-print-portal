@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -19,6 +20,13 @@ type fakeGadget struct {
 
 func (f *fakeGadget) Write(_ context.Context, src string) error { f.wrote = src; return f.err }
 func (f *fakeGadget) Clear(context.Context) error               { f.cleared = true; return f.err }
+
+type fakeIndicator struct {
+	success, deny int32
+}
+
+func (f *fakeIndicator) Success() { atomic.AddInt32(&f.success, 1) }
+func (f *fakeIndicator) Deny()    { atomic.AddInt32(&f.deny, 1) }
 
 // scanCentral serves /check and /claim with independently configurable
 // bodies, for exercising the automatic check-then-load path.
@@ -49,7 +57,9 @@ func TestDeniedTapNeverAutoLoads(t *testing.T) {
 	g := &fakeGadget{}
 	sc := &fakeScanner{}
 	sc.set("DEADBEEF")
+	ind := &fakeIndicator{}
 	a := New(NewCentralClient(srv.URL, "resin", "k"), g, sc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a.SetIndicator(ind)
 
 	rec := httptest.NewRecorder()
 	a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/scan", nil))
@@ -59,6 +69,36 @@ func TestDeniedTapNeverAutoLoads(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // a denied check never launches autoLoad; nothing to wait for
 	if g.wrote != "" {
 		t.Error("gadget.Write must NOT be called for a denied tap")
+	}
+	if atomic.LoadInt32(&ind.deny) != 1 {
+		t.Errorf("indicator.Deny calls = %d, want 1", ind.deny)
+	}
+	if atomic.LoadInt32(&ind.success) != 0 {
+		t.Errorf("indicator.Success calls = %d, want 0", ind.success)
+	}
+}
+
+// TestJustCertifiedDoesNotLightRed: a certify-by-tap capture also comes back
+// Allowed=false, but it's good news -- it must NOT trigger the red "denied"
+// light.
+func TestJustCertifiedDoesNotLightRed(t *testing.T) {
+	srv := scanCentral(t,
+		`{"allowed":false,"reason":"certification_recorded","just_certified":true,"member_name":"Ada"}`,
+		`{"claimed":false}`)
+	sc := &fakeScanner{}
+	sc.set("CAFE1234")
+	ind := &fakeIndicator{}
+	a := New(NewCentralClient(srv.URL, "resin", "k"), &fakeGadget{}, sc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a.SetIndicator(ind)
+
+	rec := httptest.NewRecorder()
+	a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/scan", nil))
+	if !strings.Contains(rec.Body.String(), `"just_certified":true`) {
+		t.Fatalf("scan response = %s", rec.Body.String())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(&ind.deny) != 0 {
+		t.Errorf("indicator.Deny calls = %d, want 0 for a just-certified tap", ind.deny)
 	}
 }
 

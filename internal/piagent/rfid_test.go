@@ -139,6 +139,8 @@ func TestTapAutoLoadsWithoutAnyClick(t *testing.T) {
 	sc := &fakeScanner{}
 	sc.set("CAFE1234")
 	a, g := fobAgent(t, fobCentral(t), sc)
+	ind := &fakeIndicator{}
+	a.SetIndicator(ind)
 
 	// The tap alone -- via /scan, the same thing WatchTaps calls -- must be
 	// enough. Nothing POSTs a load; there is no such endpoint any more.
@@ -164,6 +166,9 @@ func TestTapAutoLoadsWithoutAnyClick(t *testing.T) {
 	}
 	if !sc.cleared {
 		t.Error("scanner should be cleared after a successful auto-load")
+	}
+	if atomic.LoadInt32(&ind.success) != 1 {
+		t.Errorf("indicator.Success calls = %d, want 1", ind.success)
 	}
 }
 

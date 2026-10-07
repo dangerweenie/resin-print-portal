@@ -59,6 +59,7 @@ internal/
   piagent/           upload page + central client + gadget write
   gadget/            wraps usb-refresh.sh
   rfid/              RDM6300 (UART) EM4100 fob reader — pure Go
+  indicator/         optional green/red LED + buzzer tap feedback (periph.io GPIO)
   fobcode/           UID → all string forms, for format-agnostic matching
   slack/             best-effort Incoming Webhook poster
 db/migrations/       goose SQL migrations (embedded in the binary)
@@ -238,6 +239,29 @@ never show up.
 a 2-minute window on a printer; the next fob tapped there certifies that member
 for it (recorded in the log as `captured_certification`). No searching the
 roster — the trainee just taps.
+
+### Tap feedback: green/red LEDs + a buzzer (optional)
+
+Purely cosmetic, and optional per Pi — the agent runs identically with or
+without it wired up. If present: `internal/indicator` drives a green LED +
+piezo buzzer when a tap just loaded a file (`checkFob`/`autoLoad`'s success
+path), and a red LED when a tap was denied or a load failed. A certify-by-tap
+capture is deliberately excluded from the red light — it also reports
+`allowed:false`, but it's good news, not a denial.
+
+Fixed wiring, nothing configurable:
+
+| Component | Physical pin | GPIO (BCM) |
+|---|---|---|
+| Green LED anode, via ~330Ω resistor | 11 | GPIO17 |
+| Red LED anode, via ~330Ω resistor | 15 | GPIO22 |
+| Piezo buzzer, one leg (hardware PWM0) | 12 | GPIO18 |
+| Piezo buzzer, other leg + both LED cathodes | 14 | GND |
+
+A bare 2-pin piezo disc works directly off GPIO18's hardware PWM — no driver
+transistor needed, and no VCC pin either, just the two legs. `pi-agent` logs a
+warning and runs without any indicator at all if these pins aren't wired up or
+periph.io can't find them — unlike the fob reader, this never blocks startup.
 
 ## Bringing a printer online
 

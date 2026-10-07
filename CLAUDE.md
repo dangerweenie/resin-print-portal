@@ -139,6 +139,25 @@ like the latter and caused real confusion reading the logs. Renamed to
 Whether a member is certified at all is carried separately, via `allowed`/
 `reason` (`not_certified`) — unchanged.
 
+**Green/red LED + buzzer tap feedback (2026-10-07):** new `internal/indicator`
+package, periph.io brought back into go.mod for it (removed when the RDM6300
+swap dropped the old SPI-based MFRC522 driver; this is unrelated, just GPIO
+output, no conflict with the UART reader's pins). Fixed wiring, nothing
+configurable: green LED on GPIO17 (pin 11), red on GPIO22 (pin 15), a bare
+2-pin piezo buzzer directly on GPIO18 (pin 12, hardware PWM0 — no driver
+transistor or VCC needed), shared GND on pin 14. `Lights.Success()` (green +
+one ~200ms beep at 2.5kHz) fires from `autoLoad`'s success path;
+`Lights.Deny()` (red, no beep — a buzzer on every denied tap in a shared space
+would get old fast) fires from `checkFob` on a genuine denial and from each of
+`autoLoad`'s failure branches. A certify-by-tap capture (`JustCertified`) is
+explicitly excluded from the deny light even though it also reports
+`Allowed=false` — it's good news. Each LED stays lit for a fixed window
+(`litFor`, 3s) and a retrigger resets that timer rather than stacking.
+Optional per Pi and fails open: `piagent.Agent` defaults to a `noopIndicator`
+from `New`, and `cmd/pi-agent/main.go` only calls `SetIndicator` if
+`indicator.Open()` succeeds — logs a warning and runs lights-free otherwise,
+unlike the fob reader, which still refuses to start without working hardware.
+
 ## Printers on hand (test targets, in priority order)
 1. **Anycubic Photon Mono M7 Pro** — CURRENT TARGET. The picky one. Reads `.pwsz`
    (also `.pm7`/`.pm7m`, same ZIP container). Strict USB firmware.

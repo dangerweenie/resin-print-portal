@@ -49,12 +49,32 @@ type ScanSource interface {
 	Clear()
 }
 
+// Indicator is the slice of *indicator.Lights the agent uses; a fake stands
+// in for it in tests. Purely cosmetic feedback at the printer — a tap is
+// still checked, logged, and (if eligible) loaded with no indicator wired up
+// at all; see noopIndicator.
+type Indicator interface {
+	// Success lights the green LED + beeps: a tap just loaded a file.
+	Success()
+	// Deny lights the red LED: a tap was denied, or a load failed.
+	Deny()
+}
+
+// noopIndicator is the default when no indicator hardware has been wired up
+// with SetIndicator — dev machines, or a Pi that hasn't had the LEDs/buzzer
+// added yet. Taps work exactly the same, just silently.
+type noopIndicator struct{}
+
+func (noopIndicator) Success() {}
+func (noopIndicator) Deny()    {}
+
 // Agent is the Pi-side HTTP handler. Identity is always a fob tap.
 type Agent struct {
-	central *CentralClient
-	gadget  GadgetWriter
-	scanner ScanSource
-	log     *slog.Logger
+	central   *CentralClient
+	gadget    GadgetWriter
+	scanner   ScanSource
+	indicator Indicator
+	log       *slog.Logger
 
 	scanMu    sync.Mutex
 	scanCache scanCheck // last /check result, keyed by (code, seq), to avoid re-checking a held fob
@@ -79,9 +99,19 @@ type loadOutcome struct {
 	message string
 }
 
-// New builds an Agent.
+// New builds an Agent. It starts with no physical tap feedback; call
+// SetIndicator to wire up the LEDs/buzzer.
 func New(central *CentralClient, g GadgetWriter, scanner ScanSource, log *slog.Logger) *Agent {
-	return &Agent{central: central, gadget: g, scanner: scanner, log: log}
+	return &Agent{central: central, gadget: g, scanner: scanner, log: log, indicator: noopIndicator{}}
+}
+
+// SetIndicator wires up the physical green/red LED + buzzer feedback. Optional
+// — skip it and taps still get checked and loaded, just silently. Passing nil
+// is a no-op (keeps whatever's already set).
+func (a *Agent) SetIndicator(ind Indicator) {
+	if ind != nil {
+		a.indicator = ind
+	}
 }
 
 // Handler returns the routed HTTP handler.
@@ -176,6 +206,12 @@ func (a *Agent) checkFob(ctx context.Context, code string, seq int) (res CheckRe
 		"member", res.MemberName, "reason", res.Reason,
 		"staged", res.StagedFilename != "", "just_certified", res.JustCertified)
 
+	// A genuine denial lights the red LED. A certify-by-tap capture also comes
+	// back with Allowed=false, but that's good news, not a denial -- skip it.
+	if !res.Allowed && !res.JustCertified {
+		a.indicator.Deny()
+	}
+
 	// A tap that both passes the check AND has a print waiting IS the release
 	// action — load it now, no confirmation click. The safety checklist was
 	// already confirmed on the portal at upload time, and physically
@@ -266,19 +302,22 @@ func (a *Agent) autoLoad(code string, seq int) {
 	if err != nil {
 		a.log.Error("auto-load: claim failed", "err", err)
 		a.setLoadState(code, seq, "failed", "Couldn't reach the print portal. Nothing was loaded.")
+		a.indicator.Deny()
 		return
 	}
 	if !claim.Claimed {
 		if claim.Reason == "no_staged_job" {
 			// Expected, not an error: e.g. the same fob is still resting on
 			// the reader after an earlier tap already claimed and loaded it,
-			// so this re-check just finds nothing left to do.
+			// so this re-check just finds nothing left to do. No light either
+			// way -- nothing actually went wrong.
 			a.log.Debug("auto-load: nothing to claim", "reason", claim.Reason)
 			a.setLoadState(code, seq, "", "")
 			return
 		}
 		a.log.Warn("auto-load: claim denied", "reason", claim.Reason)
 		a.setLoadState(code, seq, "failed", denyMessage(claim.Reason))
+		a.indicator.Deny()
 		return
 	}
 
@@ -286,6 +325,7 @@ func (a *Agent) autoLoad(code string, seq int) {
 	if err != nil {
 		a.log.Error("auto-load: scratch space", "err", err)
 		a.setLoadState(code, seq, "failed", "Pi is out of scratch space.")
+		a.indicator.Deny()
 		return
 	}
 	defer os.RemoveAll(tmpDir)
@@ -298,12 +338,14 @@ func (a *Agent) autoLoad(code string, seq int) {
 	if _, err := a.central.DownloadJobFile(ctx, claim.JobID, claim.SHA256, dst); err != nil {
 		a.log.Error("auto-load: download failed", "err", err, "job", claim.JobID)
 		a.setLoadState(code, seq, "failed", "The download from the portal failed or was corrupt. Ask a staff member to retry.")
+		a.indicator.Deny()
 		return
 	}
 
 	if err := a.gadget.Write(ctx, dst); err != nil {
 		a.log.Error("auto-load: gadget write failed", "err", err)
 		a.setLoadState(code, seq, "failed", "Loading the file onto the printer's drive failed. Ask a staff member.")
+		a.indicator.Deny()
 		return
 	}
 	if err := a.central.JobStarted(ctx, claim.JobID); err != nil {
@@ -317,6 +359,7 @@ func (a *Agent) autoLoad(code string, seq int) {
 	}
 	a.log.Info("auto-load: done", "file", name, "job", claim.JobID)
 	a.setLoadState(code, seq, "loaded", msg)
+	a.indicator.Success()
 }
 
 func (a *Agent) handleFinish(w http.ResponseWriter, r *http.Request) {
