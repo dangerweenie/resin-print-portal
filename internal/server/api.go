@@ -9,12 +9,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"os"
 
-	"github.com/dangerweenie/resin-print-portal/internal/slack"
+	//"github.com/dangerweenie/resin-print-portal/internal/slack"
 	"github.com/dangerweenie/resin-print-portal/internal/sliced"
 	"github.com/dangerweenie/resin-print-portal/internal/store"
 	"github.com/go-chi/chi/v5"
+    "github.com/slack-go/slack"
 )
+
+var slack_channel = os.Getenv("SLACK_CHANNEL")
+var api *slack.Client
+var channel_id string
 
 const maxUploadBytes = 600 << 20 // 600 MiB, matches the old Flask cap
 
@@ -208,7 +214,7 @@ func (s *Server) handleJobStarted(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	eta := ""
+	eta := "?"
 	if job.EstimatedSeconds != nil {
 		tag := "estimated"
 		if job.ETAExact {
@@ -216,7 +222,7 @@ func (s *Server) handleJobStarted(w http.ResponseWriter, r *http.Request) {
 		}
 		eta = fmt.Sprintf(" — ETA %s (%s)", sliced.FormatDuration(int(*job.EstimatedSeconds)), tag)
 	}
-	s.postSlack(r, p, fmt.Sprintf(":large_green_circle: *%s* started printing `%s` on *%s*%s",
+	s.postSlack(p, fmt.Sprintf(":large_green_circle: *%s* started printing `%s` on *%s*%s",
 		displayName(job), job.Filename, p.DisplayName, eta))
 	// The file is on the gadget now — drop the portal's copy.
 	if err := s.st.DiscardJobFile(r.Context(), job.ID); err != nil {
@@ -238,7 +244,10 @@ func (s *Server) handleJobFinished(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ended {
-		s.postSlack(r, p, fmt.Sprintf(":checkered_flag: *%s* marked `%s` finished and removed it from *%s*.",
+        msgString := fmt.Sprintf(":checkered_flag: *%s* marked `%s` finished and removed from *%s*",
+            displayName(job), job.Filename, p.DisplayName)
+        api.PostMessage(channel_id, slack.MsgOptionText(msgString, false))
+		s.postSlack(p, fmt.Sprintf(":checkered_flag: *%s* marked `%s` finished and removed it from *%s*.",
 			displayName(job), job.Filename, p.DisplayName))
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -332,11 +341,15 @@ func (s *Server) logDecision(r *http.Request, printerID *int64, d Decision, file
 	}
 }
 
-func (s *Server) postSlack(r *http.Request, p store.Printer, text string) {
-	if p.SlackWebhookURL == "" {
+func (s *Server) postSlack(p store.Printer, text string) {
+	if slack_channel == "" {
 		return
 	}
-	if err := slack.Post(r.Context(), p.SlackWebhookURL, text); err != nil {
+    if api == nil {
+        api = slack.New(os.Getenv("SLACK_BOT_TOKEN"))
+    }
+    _,_,err := api.PostMessage(ChannelId(slack_channel), slack.MsgOptionText(text, false))
+	if err != nil {
 		s.log.Warn("slack post failed", "printer", p.Slug, "err", err)
 	}
 }
@@ -453,4 +466,20 @@ func jobJSON(j store.PrintJob, now time.Time) map[string]any {
 		m["remaining_human"] = sliced.FormatDuration(rem)
 	}
 	return m
+}
+
+func ChannelId(channel_name string) string {
+    if channel_id == "" {
+        var channels, err = api.GetAllConversations()
+        if err == nil {
+            for _, channel := range channels {
+                if channel.Name == channel_name {
+                    return channel.ID
+                }
+            }
+        }
+        return ""
+    } else {
+        return channel_id
+    }
 }

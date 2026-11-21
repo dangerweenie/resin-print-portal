@@ -72,6 +72,8 @@ stop-db: ## Stop the throwaway local Postgres
 #   make run ADMIN_PASSWORD=letmein
 LOCAL_DSN      ?= $(TEST_DB)
 ADMIN_PASSWORD ?= changeme
+SLACK_BOT_TOKEN ?= none
+SLACK_CHANNEL ?= none
 # A fixed dev session secret so admin logins survive a server restart.
 DEV_SESSION_SECRET ?= dev-only-session-secret-not-for-production-32
 STATUS_API_KEY ?= devstatuskey

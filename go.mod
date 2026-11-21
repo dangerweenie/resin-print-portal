@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/securecookie v1.1.2
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pressly/goose/v3 v3.27.3
+	github.com/slack-go/slack v0.31.0
 	go.bug.st/serial v1.8.0
 	golang.org/x/crypto v0.54.0
 	periph.io/x/conn/v3 v3.7.3
@@ -14,6 +15,7 @@ require (
 )
 
 require (
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect

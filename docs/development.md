@@ -89,7 +89,9 @@ Status `A` is active, `I` inactive, and `S` active (24h).
 In separate terminals:
 
 ```bash
-make run ADMIN_PASSWORD=letmein    # migrates, seeds admin "captain", serves :8080
+make run ADMIN_PASSWORD=letmein [SLACK_BOT_TOKEN=xob-...] [SLACK_CHANNEL=resin-status    # migrates, seeds admin "captain", serves :8080
+```
+```bash
 make run-worker                    # syncs the roster from :3000 now, then every minute
 ```
 
